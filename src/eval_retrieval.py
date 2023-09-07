@@ -33,7 +33,7 @@ import torchvision.transforms as T
 from PIL import Image
 
 from model.clip import _transform, load
-from model.model import convert_weights, CLIP, IM2TEXT
+from model.model import convert_weights, CLIP, IM2TEXT,CrossFormer
 from eval_utils import evaluate_imgnet_retrieval, evaluate_coco, evaluate_fashion, evaluate_cirr, evaluate_cirr_test,circo_val_retrieval
 from data import CsvDataset, CustomFolder, ImageList, CsvCOCO, FashionIQ, CIRR, CIRCODataset,collate_fn
 from params import parse_args, get_project_root
@@ -45,10 +45,11 @@ def load_model(args):
     model, _, preprocess_val = load(
             args.model,
             jit=False)
-    img2text = IM2TEXT(embed_dim=model.embed_dim, 
-                       middle_dim=args.middle_dim, 
-                       output_dim=model.token_embedding.weight.shape[1],
-                       n_layer=args.n_layer) 
+    #img2text = IM2TEXT(embed_dim=model.embed_dim, 
+    #                   middle_dim=args.middle_dim, 
+    #                   output_dim=model.token_embedding.weight.shape[1],
+    #                   n_layer=args.n_layer)
+    img2text = CrossFormer(dim=model.token_embedding.weight.shape[1]) 
     # See https://discuss.pytorch.org/t/valueerror-attemting-to-unscale-fp16-gradients/81372
     if args.precision == "amp" or args.precision == "fp32" or args.gpu is None:
         convert_models_to_fp32(model)
@@ -257,7 +258,8 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         evaluate_fashion(model, img2text, args, source_dataloader, target_dataloader)
     elif args.eval_mode == 'imgnet':
         domains = ['cartoon', 'origami', 'toy', 'sculpture']
-        prompt = ["a {} of *".format(domain) for domain in domains]
+        #prompt = ["a {} of *".format(domain) for domain in domains]
+        prompt = ["a {} of ".format(domain) for domain in domains]
         source_path = os.path.join(root_project, "imgnet", "imgnet_real_query.txt")
         target_path = os.path.join(root_project, "imgnet", "imgnet_targets.txt")
         source_dataset = ImageList(source_path, root=root_project, transforms=preprocess_val, is_labels=True)

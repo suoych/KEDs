@@ -27,7 +27,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import GradScaler
 from third_party.open_clip.scheduler import cosine_lr
 from model.clip import _transform, load
-from model.model import convert_weights, CLIP, IM2TEXT
+from model.model import convert_weights, CLIP, IM2TEXT,CrossFormer
 from trainer import train
 from data import get_data
 from params import parse_args
@@ -110,11 +110,14 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         preprocess_train = _transform(model.visual.input_resolution, is_train=True)
         preprocess_val = _transform(model.visual.input_resolution, is_train=False)
     try:
-        img2text = IM2TEXT(embed_dim=model.embed_dim, 
-                           middle_dim=args.middle_dim, 
-                           output_dim=model.token_embedding.weight.shape[1], 
-                           n_layer=args.n_layer)
+        #img2text = IM2TEXT(embed_dim=model.embed_dim, 
+        #                   middle_dim=args.middle_dim, 
+        #                   output_dim=model.token_embedding.weight.shape[1], 
+        #                   n_layer=args.n_layer)
+        img2text = CrossFormer(dim=model.token_embedding.weight.shape[1])
+        
     except:
+        print("Error!!!!")
         img2text = IM2TEXT(embed_dim=1024, output_dim=1024,
         is_normalize=args.normalize_output, is_mlp=args.use_mlp, n_layer=args.n_layer)
 

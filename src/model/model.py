@@ -23,6 +23,83 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 import torch.distributed as dist
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
+import pdb
+
+class CrossAttention(nn.Module):
+    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
+        super().__init__()
+        inner_dim = dim_head *  heads
+        project_out = not (heads == 1 and dim_head == dim)
+
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.to_k = nn.Linear(dim, inner_dim , bias=True)
+        self.to_v = nn.Linear(dim, inner_dim , bias = True)
+        self.to_k_1 = nn.Linear(inner_dim, inner_dim , bias=True)
+        self.to_v_1 = nn.Linear(inner_dim, inner_dim , bias = True)
+        self.to_k_2 = nn.Linear(inner_dim, inner_dim , bias=True)
+        self.to_v_2 = nn.Linear(inner_dim, inner_dim , bias = True)
+        self.to_q = nn.Linear(dim, inner_dim, bias = True)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        ) if project_out else nn.Identity()
+        self.self_attn = ResidualAttentionBlock(dim,heads)
+
+    def forward(self, q,kv):
+        b, n, _, h = *kv.shape, self.heads
+        b_q, n_q, _, h = *q.shape, self.heads
+
+        k = self.to_k(kv)
+        k = self.to_k_1(k)
+        k = self.to_k_2(k)
+        k = rearrange(k, 'b n (h d) -> b h n d', h = h)
+
+        v = self.to_v(kv)
+        v = self.to_v_1(v)
+        v = self.to_v_2(v)
+        v = rearrange(v, 'b n (h d) -> b h n d', h = h)
+
+        q = self.to_q(q)
+        q = rearrange(q, 'b n (h d) -> b h n d', h = h)
+
+        dots = torch.einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
+
+        attn = dots.softmax(dim=-1)
+
+        out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        out =  self.to_out(out)
+
+        out = self.self_attn(out)
+
+        return out
+
+class CrossFormer(nn.Module):
+    def __init__(self, dim, num_layers = 3, heads = 8, dim_head = 64, dropout = 0.):
+        super().__init__()
+        self._num_layers = num_layers
+        layer_list =[]
+        for _ in range(self._num_layers):
+            layer_list.append(CrossAttention(
+                    dim,
+                    heads=heads,
+                    dim_head=dim_head,
+                    dropout=dropout,
+                ))
+
+        self.cross_layers = nn.ModuleList(layer_list)
+
+    def forward(self, q,kv):
+        for layer in self.cross_layers:
+            q = layer(q, kv)
+        return q
+
+
 
 class IM2TEXT(nn.Module):
     def __init__(self, embed_dim=512, middle_dim=512, output_dim=512, n_layer=2, dropout=0.1):
@@ -232,8 +309,25 @@ class Transformer(nn.Module):
         self.layers = layers
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor):
-        return self.resblocks(x)
+    def forward(self, x: torch.Tensor,cross_layers=None,kv_features=None,collect_ind=None,mid_feature=False):
+        if mid_feature:
+            result_list = []
+            for block in self.resblocks:
+                x = block(x)
+                result_list.append(x.permute(1,0,2))
+            return x, result_list
+        elif cross_layers is not None and kv_features is not None:
+            for i in range(len(self.resblocks)):
+                if i != len(self.resblocks) - 1 and i==0:
+                    eos = x[collect_ind]
+                    eos = cross_layers(eos.unsqueeze(1), kv_features)
+                    x[collect_ind] = x[collect_ind] + eos.squeeze(1)
+                    x = self.resblocks[i](x)
+                else:
+                    x = self.resblocks[i](x)
+            return x
+        else:
+            return self.resblocks(x)
 
 
 class VisualTransformer(nn.Module):
@@ -400,8 +494,11 @@ class CLIP(nn.Module):
     def dtype(self):
         return self.visual.conv1.weight.dtype
 
-    def encode_image(self, image):
-        return self.visual(image.type(self.dtype))
+    def encode_image(self, image,mid_feature=False):
+        if mid_feature:
+            return self.visual(image.type(self.dtype))
+        else:
+            return self.visual(image.type(self.dtype))
 
     def encode_text(self, text):
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
@@ -418,7 +515,60 @@ class CLIP(nn.Module):
         x = x[torch.arange(x.size(0)), collect_ind] @ self.text_projection
         return x
     
+    def get_text_tokens(self, text):
+        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
 
+        x = x + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x).type(self.dtype)
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        collect_ind = text == self.end_id 
+        collect_ind = collect_ind.nonzero()[:, 1]
+        #x = x[torch.arange(x.size(0)), collect_ind] @ self.text_projection
+        return x, collect_ind
+    
+    def get_text_mid_cross_feature(self, text, img_tokens, cross_layers):
+        b_size = img_tokens.size(0)
+        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+        collect_ind = text == self.end_id 
+        collect_ind = collect_ind.nonzero()[:, 1]
+        #x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]:-1]], dim=1)
+        x = x + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x, cross_layers,img_tokens,collect_ind[0])
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x).type(self.dtype)
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)    
+        #x = x[torch.arange(x.size(0)), collect_ind+1] @ self.text_projection
+        x = x[torch.arange(x.size(0)), collect_ind] @ self.text_projection # we don't plus one cause we did not concat the img token
+        #pdb.set_trace()
+        return x
+    
+    """
+    def encode_text_img_cross_attn(self, text, img_tokens):
+        b_size = img_tokens.size(0)
+        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+        collect_ind = text == self.end_id 
+        collect_ind = collect_ind.nonzero()[:, 1]
+        img_tokens = img_tokens.view(b_size, 1, -1)
+        x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]:-1]], dim=1)
+        x = x + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x).type(self.dtype)
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        x = self.cross(torch.cat([x,img_tokens],dim=1))
+        
+        x = x[torch.arange(x.size(0)), collect_ind+1] @ self.text_projection
+        return x  
+    """
+        
     def encode_text_img(self, text, img_tokens):
         b_size = img_tokens.size(0)
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]

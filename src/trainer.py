@@ -99,12 +99,38 @@ def get_text_features(model, token_features, args):
     text_features = model.encode_text_img(text, token_features)
     return text_features
 
+def get_text_attention_features(model, token_features, args):
+    """
+    transfer image token into cross attention.
+    """
+    text = tokenize("a photo of")
+    text = text.cuda(args.gpu, non_blocking=True)
+    text = text.view(1, -1)
+    text = text.repeat(token_features.size(0), 1)
+    #text_features, collect_ind = model.get_text_tokens(text)
+    text_features, collect_ind, feature_list = model.get_text_mid_feature(text)
+    return text_features, collect_ind
+
 def get_loss_img2text(model, img2text, images, loss_img, loss_txt, args, memory=None):
     with torch.no_grad():
         image_features = model.encode_image(images)
+        kv_image_features = model.visual.get_tokens(images)
+        kv_image_features = model.visual.ln_post(kv_image_features)
+        kv_image_features = kv_image_features @ model.visual.proj
+    #token_features = img2text(image_features)
+    #text_features = get_text_features(model, token_features, args)
 
-    token_features = img2text(image_features)
-    text_features = get_text_features(model, token_features, args)
+    text_p = tokenize("a photo of")
+    text_p = text_p.cuda(args.gpu, non_blocking=True)
+    text_p = text_p.view(1, -1)
+    text_p = text_p.repeat(kv_image_features.size(0), 1)
+
+    #text_features, collect_ind = get_text_attention_features(model, kv_image_features, args)
+    #text_features = img2text(text_features, kv_image_features) # fuse use late cross attention
+    text_features = model.get_text_mid_cross_feature(text_p,kv_image_features,img2text)
+    #text_features = text_features[torch.arange(text_features.size(0)), collect_ind+1] @ model.text_projection
+
+
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)    
     logit_scale = model.logit_scale.exp()
