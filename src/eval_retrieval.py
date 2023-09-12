@@ -33,7 +33,7 @@ import torchvision.transforms as T
 from PIL import Image
 
 from model.clip import _transform, load
-from model.model import convert_weights, CLIP, IM2TEXT,CrossFormer
+from model.model import convert_weights, CLIP, IM2TEXT,CrossFormer,T2I
 from eval_utils import evaluate_imgnet_retrieval, evaluate_coco, evaluate_fashion, evaluate_cirr, evaluate_cirr_test,circo_val_retrieval
 from data import CsvDataset, CustomFolder, ImageList, CsvCOCO, FashionIQ, CIRR, CIRCODataset,collate_fn
 from params import parse_args, get_project_root
