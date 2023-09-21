@@ -728,12 +728,12 @@ class CustomFolderCC(Dataset):
         """
         path = self.samples[index]
         basename = os.path.basename(path).split(".")[0]
-        #cap = cap_dict[basename]
+        cap = cap_dict[basename]
         #global_preprocess_train(Image.open(BytesIO(value)))
         sample = Image.open(str(path))
         if self.transform is not None:
             sample = self.transform(sample)
-        return sample, path#cap
+        return sample, cap
 
 
 class CsvDataset(Dataset):

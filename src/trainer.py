@@ -111,23 +111,30 @@ def get_text_attention_features(model, token_features, args):
     text_features, collect_ind, feature_list = model.get_text_mid_feature(text)
     return text_features, collect_ind
 
-def get_loss_img2text(model, img2text, images, loss_img, loss_txt, args, memory=None):
-    with torch.no_grad():
-        image_features = model.encode_image(images)
-        kv_image_features = model.visual.get_tokens(images)
-        kv_image_features = model.visual.ln_post(kv_image_features)
-        kv_image_features = kv_image_features @ model.visual.proj
+
+def get_loss_img2text(model, img2text, images, caps, loss_img, loss_txt, args, memory=None):
+    #with torch.no_grad():
+    #    image_features = model.encode_image(images)
+        #kv_image_features = model.visual.get_tokens(images)
+        #kv_image_features = model.visual.ln_post(kv_image_features)
+        #kv_image_features = kv_image_features @ model.visual.proj
     #token_features = img2text(image_features)
     #text_features = get_text_features(model, token_features, args)
 
-    text_p = tokenize("a photo of")
-    text_p = text_p.cuda(args.gpu, non_blocking=True)
-    text_p = text_p.view(1, -1)
-    text_p = text_p.repeat(kv_image_features.size(0), 1)
+    #text_p = tokenize("a photo of")
+    with torch.no_grad():
+        text_p = tokenize(caps,truncate=True)
+        text_p = text_p.cuda(args.gpu, non_blocking=True)
+        text_p = model.encode_text(text_p)
+        image_features = text_p # calculate contrastive loss with text 
+    text_p = img2text(text_p)
+    #text_p = text_p.view(1, -1)
+    #text_p = text_p.repeat(kv_image_features.size(0), 1)
 
     #text_features, collect_ind = get_text_attention_features(model, kv_image_features, args)
     #text_features = img2text(text_features, kv_image_features) # fuse use late cross attention
-    text_features = model.get_text_mid_cross_feature(text_p,kv_image_features,img2text)
+    text_features = model.get_visual_composed_features(text_p, images, img2text)
+
     #text_features = text_features[torch.arange(text_features.size(0)), collect_ind+1] @ model.text_projection
 
 
@@ -212,7 +219,7 @@ def train(model, img2text, data, epoch, optimizer, scaler, scheduler, args, tb_w
         #images, texts = batch['image_byte'], batch['caption'] # this is the webdataset format
         #print(images.shape)
         #print(len(batch))
-        images, texts = batch[0], batch[1] # this is the original code
+        images, caps = batch[0], batch[1] # this is the original code
         #pdb.set_trace()
         if len(batch) == 3 and args.use_debiased_sampler:
             data_identifier = torch.unique(batch[2])[0].numpy()
@@ -231,13 +238,13 @@ def train(model, img2text, data, epoch, optimizer, scaler, scheduler, args, tb_w
         # with automatic mixed precision.
         if args.precision == "amp" :#or args.precision == "fp16":
             with autocast():
-                total_loss = get_loss_img2text(m, img2text, images, loss_img, loss_txt, args, data_identifier)
+                total_loss = get_loss_img2text(m, img2text, images, caps, loss_img, loss_txt, args, data_identifier)
                 scaler.scale(total_loss).backward()
                 scaler.step(optimizer)
             scaler.update()
 
         else:
-            total_loss = get_loss_img2text(m, img2text, images, loss_img, loss_txt, args, data_identifier)
+            total_loss = get_loss_img2text(m, img2text, images, caps, loss_img, loss_txt, args, data_identifier)
             total_loss.backward()
             optimizer.step()
 

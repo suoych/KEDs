@@ -394,11 +394,22 @@ def evaluate_imgnet_retrieval(model, img2text, args, prompt, query_loader, targe
                 #composed_feature = composed_feature[torch.arange(text_features.size(0)), collect_ind] @ m.text_projection
 
 
-                text_p = text_only.repeat(kv_image_features.size(0), 1)
+                #text_p = text_only.repeat(kv_image_features.size(0), 1)
 
                 #text_features, collect_ind = get_text_attention_features(model, kv_image_features, args)
                 #text_features = img2text(text_features, kv_image_features) # fuse use late cross attention
-                composed_feature = m.get_text_mid_cross_feature(text_p,kv_image_features,img2text)
+
+                
+                text_p = img2text(text_only_features)
+                text_p = text_p.repeat(kv_image_features.size(0), 1)
+                #text_p = text_p.view(1, -1)
+                #text_p = text_p.repeat(kv_image_features.size(0), 1)
+
+                #text_features, collect_ind = get_text_attention_features(model, kv_image_features, args)
+                #text_features = img2text(text_features, kv_image_features) # fuse use late cross attention
+                composed_feature = m.get_visual_composed_features(text_p, images, img2text)
+                composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True) 
+                #composed_feature = m.get_text_mid_cross_feature(text_p,kv_image_features,img2text)
 
                 #composed_features, collect_ind = m.get_text_tokens(text)
                 #pdb.set_trace()

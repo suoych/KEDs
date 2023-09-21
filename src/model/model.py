@@ -338,7 +338,7 @@ class Transformer(nn.Module):
             return x, result_list
         elif cross_layers is not None and kv_features is not None:
             for i in range(len(self.resblocks)):
-                if i != len(self.resblocks) - 1 and i==0:
+                if i != len(self.resblocks) - 1 and i<=5:
                     eos = x[collect_ind]
                     eos = cross_layers(eos.unsqueeze(1), kv_features)
                     x[collect_ind] = x[collect_ind] + eos.squeeze(1)
@@ -566,6 +566,68 @@ class CLIP(nn.Module):
         #x = x[torch.arange(x.size(0)), collect_ind+1] @ self.text_projection
         x = x[torch.arange(x.size(0)), collect_ind] @ self.text_projection # we don't plus one cause we did not concat the img token
         #pdb.set_trace()
+        return x
+    
+    def get_visual_composed_features(self, text_feature, images, args):
+        """
+        Map text eos token to visual space.
+        """
+        text_feature = text_feature.unsqueeze(1)
+        #text_features, collect_ind = model.get_text_tokens(text)
+        x = self.visual.conv1(images)  # shape = [*, width, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat([self.visual.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.visual.positional_embedding.to(x.dtype)
+        x = self.visual.ln_pre(x)
+
+        # random mask some token and then add text token
+        num_tokens_to_pick = 0 #int((x.shape[1]-1) * 0.5) # we randomly keep some tokens 
+        pick_positions = torch.randperm((x.shape[1]-1))[:num_tokens_to_pick]
+        pick_positions = pick_positions + 1 # pick from all except cls
+        pick_positions = torch.cat([pick_positions,torch.tensor([0])]) # add cls
+        pick_positions = pick_positions.sort().values
+        x = x[:, pick_positions, :]
+        #pdb.set_trace()
+        x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
+
+        #x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.visual.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.visual.ln_post(x[:, 0, :])
+
+        if self.visual.proj is not None:
+            x = x @ self.visual.proj
+        return x
+    
+    def get_visual_composed_features_eval(self, text_feature, images, args):
+        """
+        Map text eos token to visual space.
+        """
+        text_feature = text_feature.unsqueeze(1)
+        #text_features, collect_ind = model.get_text_tokens(text)
+        x = self.visual.conv1(images)  # shape = [*, width, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat([self.visual.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.visual.positional_embedding.to(x.dtype)
+        x = self.visual.ln_pre(x)
+
+        
+        #pdb.set_trace()
+        #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
+        x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.visual.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.visual.ln_post(x[:, 0, :])
+
+        if self.visual.proj is not None:
+            x = x @ self.visual.proj
         return x
     
     """
