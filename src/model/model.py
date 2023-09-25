@@ -329,7 +329,7 @@ class Transformer(nn.Module):
         self.layers = layers
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor,cross_layers=None,kv_features=None,collect_ind=None,mid_feature=False):
+    def forward(self, x: torch.Tensor,cross_layers=None,kv_features=None,collect_ind=None,mid_feature=False,text_feature=None):
         if mid_feature:
             result_list = []
             for block in self.resblocks:
@@ -337,6 +337,7 @@ class Transformer(nn.Module):
                 result_list.append(x.permute(1,0,2))
             return x, result_list
         elif cross_layers is not None and kv_features is not None:
+            # textual invert
             for i in range(len(self.resblocks)):
                 if i != len(self.resblocks) - 1 and i<=5:
                     eos = x[collect_ind]
@@ -346,12 +347,25 @@ class Transformer(nn.Module):
                 else:
                     x = self.resblocks[i](x)
             return x
+        elif text_feature is not None:
+            # visual invert
+            for i in range(len(self.resblocks)):
+                if i == len(self.resblocks) - 1 :
+                    x = x.permute(1,0,2)
+                    #x = torch.cat([x[:, 0].unsqueeze(1)+text_feature, x[:, 1:]+text_feature], dim=1)
+                    x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
+                    x = x.permute(1,0,2)
+                    x = self.resblocks[i](x)
+                else:
+                    #with torch.no_grad():
+                    x = self.resblocks[i](x)
+            return x
         else:
             return self.resblocks(x)
 
 
 class VisualTransformer(nn.Module):
-    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int):
+    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int, attn_mask=None):
         super().__init__()
         self.input_resolution = input_resolution
         self.output_dim = output_dim
@@ -362,7 +376,7 @@ class VisualTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        self.transformer = Transformer(width, layers, heads)
+        self.transformer = Transformer(width, layers, heads,attn_mask=attn_mask)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -441,6 +455,15 @@ class CLIP(nn.Module):
                 heads=vision_heads,
                 output_dim=embed_dim
             )
+            #self.visual_mask = VisualTransformer(
+            #    input_resolution=image_resolution,
+            #    patch_size=vision_patch_size,
+            #    width=vision_width,
+            #    layers=vision_layers,
+            #    heads=vision_heads,
+            #    output_dim=embed_dim,
+            #    attn_mask=self.build_visual_attention_mask()
+            #)
         self.transformer_width = transformer_width
         self.transformer = Transformer(
             width=transformer_width,
@@ -510,12 +533,28 @@ class CLIP(nn.Module):
         mask.triu_(1)  # zero out the lower diagonal
         return mask
 
+    def build_visual_attention_mask(self):
+        # lazily create causal attention mask, with full attention between the vision tokens
+        # pytorch uses additive attention mask; fill with -inf
+        mask = torch.empty(257, 257)
+        mask.fill_(float("-inf"))
+        num_tokens_to_pick = 1 # we randomly keep some tokens 
+        pick_positions = torch.randperm(256)[:num_tokens_to_pick]
+        pick_positions = pick_positions + 1 # pick from all except cls
+        
+        for i in pick_positions:
+            for j in range(257):
+                mask[j][i] = 0
+        return mask
+
     @property
     def dtype(self):
         return self.visual.conv1.weight.dtype
 
-    def encode_image(self, image,mid_feature=False):
+    def encode_image(self, image,mid_feature=False,mask_token=False):
         if mid_feature:
+            return self.visual(image.type(self.dtype))
+        elif mask_token:
             return self.visual(image.type(self.dtype))
         else:
             return self.visual(image.type(self.dtype))
@@ -568,6 +607,33 @@ class CLIP(nn.Module):
         #pdb.set_trace()
         return x
     
+    def random_masking(self, x, mask_ratio):
+        """
+        Perform per-sample random masking by per-sample shuffling.
+        Per-sample shuffling is done by argsort random noise.
+        x: [N, L, D], sequence
+        """
+        N, L, D = x.shape  # batch, length, dim
+        len_keep = int(L * (1 - mask_ratio))
+        
+        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
+        
+        # sort noise for each sample
+        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([N, L], device=x.device)
+        mask[:, :len_keep] = 0
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return x_masked, mask, ids_restore
+    
     def get_visual_composed_features(self, text_feature, images, args):
         """
         Map text eos token to visual space.
@@ -580,20 +646,18 @@ class CLIP(nn.Module):
         x = torch.cat([self.visual.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.visual.positional_embedding.to(x.dtype)
         x = self.visual.ln_pre(x)
+        
+        # adopt random masking from MAE
+        x_masked, mask, ids_restore = self.random_masking(x[:,1:,:], 0)
+        #x = x[:,0,:].unsqueeze(1)
+        x = torch.cat([x[:,0,:].unsqueeze(1), x_masked], dim=1)
 
-        # random mask some token and then add text token
-        num_tokens_to_pick = 0 #int((x.shape[1]-1) * 0.5) # we randomly keep some tokens 
-        pick_positions = torch.randperm((x.shape[1]-1))[:num_tokens_to_pick]
-        pick_positions = pick_positions + 1 # pick from all except cls
-        pick_positions = torch.cat([pick_positions,torch.tensor([0])]) # add cls
-        pick_positions = pick_positions.sort().values
-        x = x[:, pick_positions, :]
         #pdb.set_trace()
-        x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
-
+        #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:].mean(dim=1, keepdim=True)], dim=1) # average pooling
+        #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.visual.transformer(x)
+        x = self.visual.transformer(x,text_feature=text_feature)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.visual.ln_post(x[:, 0, :])
@@ -614,21 +678,43 @@ class CLIP(nn.Module):
         x = torch.cat([self.visual.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.visual.positional_embedding.to(x.dtype)
         x = self.visual.ln_pre(x)
-
+        x_ori = x 
         
         #pdb.set_trace()
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
-        x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
+        #x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
+        #x = x[:, 0].unsqueeze(1)
+        x_masked, mask, ids_restore = self.random_masking(x[:,1:,:], 0)
+
+        #x = x[:,0,:].unsqueeze(1)
+        x = torch.cat([x[:,0,:].unsqueeze(1), x_masked], dim=1)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.visual.transformer(x)
+        x = self.visual.transformer(x,text_feature=None)#text_feature)
+        #x = self.visual.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.visual.ln_post(x[:, 0, :])
 
         if self.visual.proj is not None:
             x = x @ self.visual.proj
-        return x
+
+        t_masked, mask, ids_restore = self.random_masking(x_ori[:,1:,:], 1)
+
+        #x = x[:,0,:].unsqueeze(1)
+        t = torch.cat([x_ori[:,0,:].unsqueeze(1), t_masked], dim=1)
+
+        t = t.permute(1, 0, 2)  # NLD -> LND
+        t = self.visual.transformer(t,text_feature=text_feature)
+        #x = self.visual.transformer(x)
+        t = t.permute(1, 0, 2)  # LND -> NLD
+
+        t = self.visual.ln_post(t[:, 0, :])
+
+        if self.visual.proj is not None:
+            t = t @ self.visual.proj
+
+        return 0.075 * x + 0.925 * t
     
     """
     def encode_text_img_cross_attn(self, text, img_tokens):
@@ -823,5 +909,8 @@ def build_model(state_dict: dict):
             del state_dict[key]
 
     convert_weights(model)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict) #,strict=False) # manually load weights for masked visual transformers
+    #with torch.no_grad():
+    #    for a_param, b_param in zip(model.visual.parameters(), model.visual_mask.parameters()):
+    #        b_param.copy_(a_param)
     return model.eval()

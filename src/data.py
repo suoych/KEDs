@@ -593,8 +593,16 @@ class CsvCOCO(Dataset):
         self.root = os.path.join(root, 'coco')
         self.root_img = os.path.join(self.root, 'val2017')
         self.csv_file = os.path.join(self.root, 'coco_eval.csv')
+        cap_file = os.path.join(self.root, 'annotations/captions_val2017.json')
         logging.debug(f'Loading csv data from {self.csv_file}.')
-        df = pd.read_csv(self.csv_file, sep=sep)                
+        df = pd.read_csv(self.csv_file, sep=sep) 
+        with open(cap_file,"r") as f:
+            caps = json.load(f)
+            caps = caps["annotations"]
+        self.cap_dict = {}
+        for i in caps:
+            self.cap_dict[i["image_id"]] = i["caption"]
+
         self.images = df['id'].tolist()
         ## query_region contains the box of query regions.
         regions = df['query_regions'].tolist()
@@ -622,6 +630,9 @@ class CsvCOCO(Dataset):
 
     def __getitem__(self, idx):
         img_path = os.path.join(self.root_img, str(self.images[idx]))
+        image_id = self.images[idx].split(".")[0].split("0")[-1]
+        cap = self.cap_dict[int(image_id)]
+        cap = tokenize(cap)[0]
         image = Image.open(img_path)        
         masked_path = os.path.join(self.root_img.replace('val2017', 'val2017_masked'), \
             str(self.images[idx]))
@@ -646,7 +657,7 @@ class CsvCOCO(Dataset):
         text_with_queryclass = tokenize(text_with_queryclass)[0]
         text_full = tokenize(text_full)[0]
         return image, region_image, text_full, text_with_blank, \
-            text_with_queryclass, str(self.images[idx]), raw_text
+            text_with_queryclass, str(self.images[idx]), raw_text, cap
 
 
 class ImageList(Dataset):

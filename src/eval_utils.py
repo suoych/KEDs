@@ -468,12 +468,13 @@ def evaluate_coco(model, img2text, args, loader):
     all_composed_features_with_class = []  
     all_text_full_features = [] 
 
-    m = model.module if args.distributed or args.dp else model
+    #m = model.module if args.distributed or args.dp else model
+    m = model
     logit_scale = m.logit_scale.exp()
     logit_scale = logit_scale.mean()
     with torch.no_grad():
         for batch in tqdm(loader):
-            images, region_images, text_full, text_with_blank, text_with_blank_query, filename, raw_text = batch            
+            images, region_images, text_full, text_with_blank, text_with_blank_query, filename, raw_text, cap = batch            
             if args.gpu is not None:
                 images = images.cuda(args.gpu, non_blocking=True)
                 region_images = region_images.cuda(args.gpu, non_blocking=True)
@@ -605,17 +606,28 @@ def evaluate_cirr(model, img2text, args, query_loader, target_loader):
             #composed_feature = m.encode_text_img_retrieval(text_with_blank, query_image_tokens, split_ind=id_split, repeat=False)    
             
             # this part for late fusion cross-attention prediction
-            composed_features, collect_ind = m.get_text_tokens(text_with_blank)
+            #composed_features, collect_ind = m.get_text_tokens(text_with_blank)
             #pdb.set_trace()
-            composed_features = img2text(query_image_features.unsqueeze(1), composed_features) # fuse use late cross attention
-            composed_feature = composed_features[:,0] @ m.text_projection
+            #composed_features = img2text(query_image_features.unsqueeze(1), composed_features) # fuse use late cross attention
+            #composed_feature = composed_features[:,0] @ m.text_projection
+            
+            text_p = img2text(caption_features)
+            #text_p = text_p.repeat(kv_image_features.size(0), 1)
+            #text_p = text_p.view(1, -1)
+            #text_p = text_p.repeat(kv_image_features.size(0), 1)
+
+            #text_features, collect_ind = get_text_attention_features(model, kv_image_features, args)
+            #text_features = img2text(text_features, kv_image_features) # fuse use late cross attention
+            composed_feature = m.get_visual_composed_features_eval(text_p, ref_images, img2text)
+            composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True) 
+            #pdb.set_trace()
                         
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
             caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
             query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
             composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)            
-            mixture_features = query_image_features + caption_features            
+            mixture_features = 0.05 * query_image_features + 0.95 * caption_features            
             mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
             all_caption_features.append(caption_features)
             all_query_image_features.append(query_image_features)
@@ -800,10 +812,21 @@ def evaluate_fashion(model, img2text, args, source_loader, target_loader):
             #composed_feature = m.encode_text_img_retrieval(target_caption, query_image_tokens, split_ind=id_split, repeat=False)
 
             # this part for late fusion cross-attention prediction
-            composed_features, collect_ind = m.get_text_tokens(target_caption)
+            #composed_features, collect_ind = m.get_text_tokens(target_caption)
             #pdb.set_trace()
-            composed_features = img2text(query_image_features.unsqueeze(1), composed_features) # fuse use late cross attention
-            composed_feature = composed_features[:,0] @ m.text_projection
+            #composed_features = img2text(query_image_features.unsqueeze(1), composed_features) # fuse use late cross attention
+            #composed_feature = composed_features[:,0] @ m.text_projection
+
+            
+            text_p = img2text(caption_features)
+            #text_p = text_p.repeat(kv_image_features.size(0), 1)
+            #text_p = text_p.view(1, -1)
+            #text_p = text_p.repeat(kv_image_features.size(0), 1)
+
+            #text_features, collect_ind = get_text_attention_features(model, kv_image_features, args)
+            #text_features = img2text(text_features, kv_image_features) # fuse use late cross attention
+            composed_feature = m.get_visual_composed_features_eval(text_p, ref_images, img2text)
+            composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True) 
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
             caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       

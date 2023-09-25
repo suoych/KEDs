@@ -115,6 +115,7 @@ def get_text_attention_features(model, token_features, args):
 def get_loss_img2text(model, img2text, images, caps, loss_img, loss_txt, args, memory=None):
     #with torch.no_grad():
     #    image_features = model.encode_image(images)
+        #masked_image_features = model.visual_mask(images.type(model.dtype))
         #kv_image_features = model.visual.get_tokens(images)
         #kv_image_features = model.visual.ln_post(kv_image_features)
         #kv_image_features = kv_image_features @ model.visual.proj
@@ -128,6 +129,13 @@ def get_loss_img2text(model, img2text, images, caps, loss_img, loss_txt, args, m
         text_p = model.encode_text(text_p)
         image_features = text_p # calculate contrastive loss with text 
     text_p = img2text(text_p)
+
+    for i in range(len(model.visual.transformer.resblocks)):
+        if i != len(model.visual.transformer.resblocks) - 1:
+            for param in model.visual.transformer.resblocks[i].parameters():
+                param.requires_grad = False
+    #pdb.set_trace()
+
     #text_p = text_p.view(1, -1)
     #text_p = text_p.repeat(kv_image_features.size(0), 1)
 
@@ -139,7 +147,14 @@ def get_loss_img2text(model, img2text, images, caps, loss_img, loss_txt, args, m
 
 
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-    text_features = text_features / text_features.norm(dim=-1, keepdim=True)    
+    #masked_image_features = masked_image_features / masked_image_features.norm(dim=-1, keepdim=True)
+    text_features = text_features / text_features.norm(dim=-1, keepdim=True) 
+    #logits_per_image = image_features @ text_features.t()
+    #logits_per_image_masked = image_features @ masked_image_features.t()
+    #logits_per_text = text_features @ image_features.t()
+
+
+
     logit_scale = model.logit_scale.exp()
     logit_scale = logit_scale.mean()
     if args.distributed and args.aggregate:

@@ -71,6 +71,7 @@ def load_model(args):
         # Previously batch size and workers were global and not per GPU.
         # args.batch_size = args.batch_size / ngpus_per_node)
         # args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
+        
         if args.distributed and args.use_bn_sync:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
         if args.distributed:
@@ -82,7 +83,7 @@ def load_model(args):
         if args.dp:
             model = torch.nn.DataParallel(model, device_ids=args.multigpu)
             img2text = torch.nn.DataParallel(img2text, device_ids=args.multigpu)
-
+        
         if args.precision == "fp16":
             convert_weights(model)
             convert_weights(img2text)
@@ -109,7 +110,10 @@ def load_model(args):
             sd = {k[len('module.'):]: v for k, v in sd.items()}
         if not args.distributed and next(iter(sd_img2text.items()))[0].startswith('module'):
             sd_img2text = {k[len('module.'):]: v for k, v in sd_img2text.items()}
-        model.load_state_dict(sd)
+        model.load_state_dict(sd,strict=False) # manually load weights for masked visual transformers
+        #with torch.no_grad():
+        #    for a_param, b_param in zip(model.visual.parameters(), model.visual_mask.parameters()):
+        #        b_param.copy_(a_param)
         img2text.load_state_dict(sd_img2text)
         logging.info(
             f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})"
