@@ -114,11 +114,11 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         #                   middle_dim=args.middle_dim, 
         #                   output_dim=model.token_embedding.weight.shape[1], 
         #                   n_layer=args.n_layer)
-        #img2text = CrossFormer(dim=model.token_embedding.weight.shape[1])
-        img2text = T2I(embed_dim=model.token_embedding.weight.shape[1], 
-                           middle_dim=args.middle_dim, 
-                           output_dim=model.visual.proj.shape[0], 
-                           n_layer=args.n_layer)
+        img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1])
+        #img2text = T2I(embed_dim=model.token_embedding.weight.shape[1], 
+        #                   middle_dim=args.middle_dim, 
+        #                   output_dim=model.visual.proj.shape[0], 
+        #                   n_layer=args.n_layer)
         
     except:
         print("Error!!!!")

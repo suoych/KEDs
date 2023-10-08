@@ -28,7 +28,7 @@ from einops.layers.torch import Rearrange
 import pdb
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
+    def __init__(self, dim,q_dim, heads = 8, dim_head = 64, dropout = 0.):
         super().__init__()
         inner_dim = dim_head *  heads
         project_out = not (heads == 1 and dim_head == dim)
@@ -42,10 +42,10 @@ class CrossAttention(nn.Module):
         self.to_v_1 = nn.Linear(inner_dim, inner_dim , bias = True)
         self.to_k_2 = nn.Linear(inner_dim, inner_dim , bias=True)
         self.to_v_2 = nn.Linear(inner_dim, inner_dim , bias = True)
-        self.to_q = nn.Linear(dim, inner_dim, bias = True)
+        self.to_q = nn.Linear(q_dim, inner_dim, bias = True)
 
         self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
+            nn.Linear(inner_dim, q_dim),
             nn.Dropout(dropout)
         ) if project_out else nn.Identity()
         #self.self_attn = ResidualAttentionBlock(dim,heads)
@@ -80,13 +80,14 @@ class CrossAttention(nn.Module):
         return out
 
 class CrossFormer(nn.Module):
-    def __init__(self, dim, num_layers = 3, heads = 8, dim_head = 64, dropout = 0.):
+    def __init__(self, dim,q_dim, num_layers = 1, heads = 8, dim_head = 64, dropout = 0.):
         super().__init__()
         self._num_layers = num_layers
         layer_list =[]
         for _ in range(self._num_layers):
             layer_list.append(CrossAttention(
                     dim,
+                    q_dim,
                     heads=heads,
                     dim_head=dim_head,
                     dropout=dropout,
@@ -135,11 +136,14 @@ class T2I(nn.Module):
             dim = middle_dim
             layers.append(nn.Sequential(*block))        
         self.layers = nn.Sequential(*layers)
+        #self.ln_final = LayerNorm(output_dim)
 
     def forward(self, x: torch.Tensor):
         for layer in self.layers:
             x = layer(x)
-        return self.fc_out(x)
+        x = self.fc_out(x)
+        #x = self.ln_final(x)
+        return x
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -329,7 +333,7 @@ class Transformer(nn.Module):
         self.layers = layers
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor,cross_layers=None,kv_features=None,collect_ind=None,mid_feature=False,text_feature=None):
+    def forward(self, x: torch.Tensor,cross_layers=None,kv_features=None,collect_ind=None,mid_feature=False,text_feature=None, img2text=None):
         if mid_feature:
             result_list = []
             for block in self.resblocks:
@@ -350,10 +354,15 @@ class Transformer(nn.Module):
         elif text_feature is not None:
             # visual invert
             for i in range(len(self.resblocks)):
-                if i == len(self.resblocks) - 1 :
-                    x = x.permute(1,0,2)
+                if i == len(self.resblocks) - 6 :
+                    #x = x.permute(1,0,2)
                     #x = torch.cat([x[:, 0].unsqueeze(1)+text_feature, x[:, 1:]+text_feature], dim=1)
-                    x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
+                    #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
+                    #x = x.permute(1,0,2)
+                    
+                    x = x.permute(1,0,2)
+                    x = torch.cat([x[:, 0].unsqueeze(1) + img2text(x,text_feature).squeeze(1), x[:, 1:]], dim=1)
+                    #x[:,0] = x[:,0] + img2text(text_feature,x).squeeze(1)
                     x = x.permute(1,0,2)
                     x = self.resblocks[i](x)
                 else:
@@ -634,7 +643,7 @@ class CLIP(nn.Module):
 
         return x_masked, mask, ids_restore
     
-    def get_visual_composed_features(self, text_feature, images, args):
+    def get_visual_composed_features(self, text_feature, images,img2text):
         """
         Map text eos token to visual space.
         """
@@ -648,7 +657,7 @@ class CLIP(nn.Module):
         x = self.visual.ln_pre(x)
         
         # adopt random masking from MAE
-        x_masked, mask, ids_restore = self.random_masking(x[:,1:,:], 0)
+        x_masked, mask, ids_restore = self.random_masking(x[:,1:,:], 1)
         #x = x[:,0,:].unsqueeze(1)
         x = torch.cat([x[:,0,:].unsqueeze(1), x_masked], dim=1)
 
@@ -657,7 +666,7 @@ class CLIP(nn.Module):
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.visual.transformer(x,text_feature=text_feature)
+        x = self.visual.transformer(x,text_feature=text_feature,img2text=img2text)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.visual.ln_post(x[:, 0, :])
@@ -666,7 +675,7 @@ class CLIP(nn.Module):
             x = x @ self.visual.proj
         return x
     
-    def get_visual_composed_features_eval(self, text_feature, images, args):
+    def get_visual_composed_features_eval(self, text_feature, images):
         """
         Map text eos token to visual space.
         """
@@ -684,7 +693,7 @@ class CLIP(nn.Module):
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
         #x = x[:, 0].unsqueeze(1)
-        x_masked, mask, ids_restore = self.random_masking(x[:,1:,:], 0)
+        x_masked, mask, ids_restore = self.random_masking(x[:,1:,:], 1)
 
         #x = x[:,0,:].unsqueeze(1)
         x = torch.cat([x[:,0,:].unsqueeze(1), x_masked], dim=1)
@@ -704,6 +713,8 @@ class CLIP(nn.Module):
         #x = x[:,0,:].unsqueeze(1)
         t = torch.cat([x_ori[:,0,:].unsqueeze(1), t_masked], dim=1)
 
+        #pdb.set_trace()
+
         t = t.permute(1, 0, 2)  # NLD -> LND
         t = self.visual.transformer(t,text_feature=text_feature)
         #x = self.visual.transformer(x)
@@ -714,7 +725,7 @@ class CLIP(nn.Module):
         if self.visual.proj is not None:
             t = t @ self.visual.proj
 
-        return 0.075 * x + 0.925 * t
+        return t #0.075 * x + 0.925 * t
     
     """
     def encode_text_img_cross_attn(self, text, img_tokens):

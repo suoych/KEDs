@@ -611,14 +611,14 @@ def evaluate_cirr(model, img2text, args, query_loader, target_loader):
             #composed_features = img2text(query_image_features.unsqueeze(1), composed_features) # fuse use late cross attention
             #composed_feature = composed_features[:,0] @ m.text_projection
             
-            text_p = img2text(caption_features)
+            #text_p = img2text(caption_features)
             #text_p = text_p.repeat(kv_image_features.size(0), 1)
             #text_p = text_p.view(1, -1)
             #text_p = text_p.repeat(kv_image_features.size(0), 1)
 
             #text_features, collect_ind = get_text_attention_features(model, kv_image_features, args)
             #text_features = img2text(text_features, kv_image_features) # fuse use late cross attention
-            composed_feature = m.get_visual_composed_features_eval(text_p, ref_images, img2text)
+            composed_feature = m.get_visual_composed_features(caption_features, ref_images, img2text)
             composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True) 
             #pdb.set_trace()
                         
@@ -831,7 +831,7 @@ def evaluate_fashion(model, img2text, args, source_loader, target_loader):
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
             caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
             query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
-            mixture_features = query_image_features + caption_features
+            mixture_features = 0.025*query_image_features + 0.975*caption_features
             mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
             composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
 
