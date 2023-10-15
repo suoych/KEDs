@@ -630,9 +630,12 @@ class CsvCOCO(Dataset):
 
     def __getitem__(self, idx):
         img_path = os.path.join(self.root_img, str(self.images[idx]))
+        
+        basename = os.path.basename(img_path).split(".")[0]
+        
         image_id = self.images[idx].split(".")[0].split("0")[-1]
-        cap = self.cap_dict[int(image_id)]
-        cap = tokenize(cap)[0]
+        #cap = self.cap_dict[int(image_id)]
+        #cap = tokenize(cap)[0]
         image = Image.open(img_path)        
         masked_path = os.path.join(self.root_img.replace('val2017', 'val2017_masked'), \
             str(self.images[idx]))
@@ -657,7 +660,7 @@ class CsvCOCO(Dataset):
         text_with_queryclass = tokenize(text_with_queryclass)[0]
         text_full = tokenize(text_full)[0]
         return image, region_image, text_full, text_with_blank, \
-            text_with_queryclass, str(self.images[idx]), raw_text, cap
+            text_with_queryclass, str(self.images[idx]), raw_text, basename
 
 
 class ImageList(Dataset):
@@ -687,11 +690,12 @@ class ImageList(Dataset):
         else:
             img_path = str(self.images[idx])
         images = self.transforms(Image.open(img_path))
+        basename = os.path.basename(img_path).split(".")[0]
         if self.return_filename:
             return images, img_path
         elif self.is_labels:
             target = self.labels[idx]
-            return images, target       
+            return images, target, basename    
         else:
             return images
 
@@ -744,8 +748,55 @@ class CustomFolderCC(Dataset):
         sample = Image.open(str(path))
         if self.transform is not None:
             sample = self.transform(sample)
-        return sample, cap
+        return sample, cap, basename
+    
+class CustomFolderCCFeature(Dataset):
+    """
+    A class for directly loading pre-saved CLIP features of CC3M.
+    """
+    def __init__(self, folder):
+        self.image_folder = os.path.join(folder,"image_feature_folder")
+        self.text_folder = os.path.join(folder,"text_feature_folder")
+        self.image_lists = os.listdir(self.image_folder)
 
+    def __len__(self):
+        return len(self.image_lists)
+
+    def __getitem__(self, index: int):
+        """
+        return feature.
+        """
+        image_path = os.path.join(self.image_folder, self.image_lists[index])
+        text_path = os.path.join(self.text_folder, self.image_lists[index])
+        image_sample = torch.load(str(image_path))
+        text_sample = torch.load(str(text_path))
+        return image_sample,text_sample
+
+class LoadDataBase(Dataset):
+    """
+    Class for loading the retrieval databases.
+    """
+    def __init__(self, folder):
+        self.image_folder = os.path.join(folder,"image_feature_database")
+        self.text_folder = os.path.join(folder,"text_feature_database")
+        self.image_lists = os.listdir(self.image_folder)
+
+    def __len__(self):
+        return len(self.image_lists)
+
+    def __getitem__(self, index: int):
+        """
+        Args: 
+            index (int): Index
+
+        Returns:
+            tuple: (sample, target) where target is class_index of the target class.
+        """
+        image_path = os.path.join(self.image_folder, self.image_lists[index])
+        text_path = os.path.join(self.text_folder, self.image_lists[index])
+        image_sample = torch.load(str(image_path), map_location=torch.device('cpu'))
+        text_sample = torch.load(str(text_path), map_location=torch.device('cpu'))
+        return image_sample,text_sample
 
 class CsvDataset(Dataset):
     def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t",
@@ -929,7 +980,8 @@ def get_directory_dataset(args, preprocess_fn, is_train, input_filename=None):
         batch_size=args.batch_size,
         shuffle=shuffle,
         num_workers=args.workers,
-        pin_memory=True,
+        #pin_memory=True,
+        pin_memory=False,
         sampler=sampler,
         drop_last=is_train,
     )

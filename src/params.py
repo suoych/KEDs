@@ -331,6 +331,18 @@ def parse_args():
             "By default, datapoints are sampled uniformly regardless of the dataset sizes."
         )
     )
+    parser.add_argument(
+        "--pre-save-feature",
+        default=False,
+        action="store_true",
+        help="Whether to save precomputed features for boosting training speed."
+    )
+    parser.add_argument(
+        "--load-feature",
+        default=False,
+        action="store_true",
+        help="Whether to load the presaved features."
+    )
     args = parser.parse_args()
     args.aggregate = not args.skip_aggregate
 

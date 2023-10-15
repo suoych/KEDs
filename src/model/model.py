@@ -28,44 +28,36 @@ from einops.layers.torch import Rearrange
 import pdb
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim,q_dim, heads = 8, dim_head = 64, dropout = 0.):
+    def __init__(self, q_dim,k_dim,v_dim, heads = 8, dim_head = 64, dropout = 0.):
         super().__init__()
         inner_dim = dim_head *  heads
-        project_out = not (heads == 1 and dim_head == dim)
+        project_out = not (heads == 1 and dim_head == q_dim)
 
         self.heads = heads
         self.scale = dim_head ** -0.5
 
-        self.to_k = nn.Linear(dim, inner_dim , bias=True)
-        self.to_v = nn.Linear(dim, inner_dim , bias = True)
-        self.to_k_1 = nn.Linear(inner_dim, inner_dim , bias=True)
-        self.to_v_1 = nn.Linear(inner_dim, inner_dim , bias = True)
-        self.to_k_2 = nn.Linear(inner_dim, inner_dim , bias=True)
-        self.to_v_2 = nn.Linear(inner_dim, inner_dim , bias = True)
         self.to_q = nn.Linear(q_dim, inner_dim, bias = True)
-
+        self.to_k = nn.Linear(k_dim, inner_dim , bias=True)
+        self.to_v = nn.Linear(v_dim, inner_dim , bias = True)
+        
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim, q_dim),
             nn.Dropout(dropout)
         ) if project_out else nn.Identity()
         #self.self_attn = ResidualAttentionBlock(dim,heads)
 
-    def forward(self, q,kv):
-        b, n, _, h = *kv.shape, self.heads
+    def forward(self, q, k, v):
+        b, n, _, h = *k.shape, self.heads
         b_q, n_q, _, h = *q.shape, self.heads
-
-        k = self.to_k(kv)
-        k = self.to_k_1(k)
-        k = self.to_k_2(k)
-        k = rearrange(k, 'b n (h d) -> b h n d', h = h)
-
-        v = self.to_v(kv)
-        v = self.to_v_1(v)
-        v = self.to_v_2(v)
-        v = rearrange(v, 'b n (h d) -> b h n d', h = h)
 
         q = self.to_q(q)
         q = rearrange(q, 'b n (h d) -> b h n d', h = h)
+
+        k = self.to_k(k)
+        k = rearrange(k, 'b n (h d) -> b h n d', h = h)
+
+        v = self.to_v(v)
+        v = rearrange(v, 'b n (h d) -> b h n d', h = h)
 
         dots = torch.einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
 
@@ -80,14 +72,15 @@ class CrossAttention(nn.Module):
         return out
 
 class CrossFormer(nn.Module):
-    def __init__(self, dim,q_dim, num_layers = 1, heads = 8, dim_head = 64, dropout = 0.):
+    def __init__(self, q_dim, k_dim, v_dim, num_layers = 1, heads = 8, dim_head = 64, dropout = 0.):
         super().__init__()
         self._num_layers = num_layers
         layer_list =[]
         for _ in range(self._num_layers):
             layer_list.append(CrossAttention(
-                    dim,
                     q_dim,
+                    k_dim,
+                    v_dim,
                     heads=heads,
                     dim_head=dim_head,
                     dropout=dropout,
@@ -95,9 +88,9 @@ class CrossFormer(nn.Module):
 
         self.cross_layers = nn.ModuleList(layer_list)
 
-    def forward(self, q,kv):
+    def forward(self, q, k, v):
         for layer in self.cross_layers:
-            q = layer(q, kv)
+            q = layer(q, k, v)
         return q
 
 
@@ -390,7 +383,7 @@ class VisualTransformer(nn.Module):
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor,mid_feature=False):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
@@ -399,15 +392,21 @@ class VisualTransformer(nn.Module):
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-
-        x = self.ln_post(x[:, 0, :])
-
-        if self.proj is not None:
-            x = x @ self.proj
-
-        return x
+        if mid_feature:
+            x,result_list = self.transformer(x,mid_feature=mid_feature)
+            x = x.permute(1, 0, 2)  # LND -> NLD
+            x = self.ln_post(x[:, 0, :])
+            if self.proj is not None:
+                x = x @ self.proj
+            return x, result_list
+        else:
+            x = self.transformer(x)
+            x = x.permute(1, 0, 2)  # LND -> NLD
+            x = self.ln_post(x[:, 0, :])
+            if self.proj is not None:
+                x = x @ self.proj
+            return x
+        
 
     def get_tokens(self, x: torch.Tensor):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
@@ -562,7 +561,7 @@ class CLIP(nn.Module):
 
     def encode_image(self, image,mid_feature=False,mask_token=False):
         if mid_feature:
-            return self.visual(image.type(self.dtype))
+            return self.visual(image.type(self.dtype),mid_feature=mid_feature)
         elif mask_token:
             return self.visual(image.type(self.dtype))
         else:

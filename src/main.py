@@ -28,8 +28,8 @@ from torch.cuda.amp import GradScaler
 from third_party.open_clip.scheduler import cosine_lr
 from model.clip import _transform, load
 from model.model import convert_weights, CLIP, IM2TEXT,CrossFormer,T2I
-from trainer import train
-from data import get_data
+from trainer import train,save_feature
+from data import get_data,LoadDataBase
 from params import parse_args
 from logger import setup_primary_logging, setup_worker_logging
 from utils import is_master, convert_models_to_fp32
@@ -37,6 +37,9 @@ import torchvision.transforms as T
 import numpy as np
 import random
 import pdb
+from torch.utils.data import DataLoader
+import faiss
+import copy
 
 def seed_everything(seed):
     #if seed >= 10000:
@@ -53,7 +56,8 @@ def seed_everything(seed):
     np.random.seed(seed)
     random.seed(seed)
 
-def main_worker(gpu, ngpus_per_node, log_queue, args):
+def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
+
     args.gpu = gpu
     args.rank = gpu
     setup_worker_logging(args.rank, log_queue, args.log_level)
@@ -65,6 +69,25 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     seed_everything(args.seed)  
     #torch.cuda.manual_seed_all(args.seed) 
     torch.use_deterministic_algorithms(True)
+
+    image_bases,text_bases = database[0], database[1]
+    ngpus = faiss.get_num_gpus()
+    image_cpu_index = faiss.IndexFlatL2(768)
+    res = faiss.StandardGpuResources()
+    image_gpu_index = faiss.index_cpu_to_gpu(res, gpu, image_cpu_index)
+    #image_gpu_index = faiss.index_cpu_to_all_gpus(image_cpu_index)
+    image_gpu_index.add(image_bases.numpy())  # add vectors to the image_index
+    #image_cpu_index.add(image_bases.numpy())
+    text_cpu_index = faiss.IndexFlatL2(768)
+    #text_gpu_index = faiss.index_cpu_to_all_gpus(text_cpu_index)
+    text_gpu_index = faiss.index_cpu_to_gpu(res, gpu, text_cpu_index)
+    text_gpu_index.add(text_bases.numpy())  # add vectors to the image_index
+    #text_cpu_index.add(text_bases.numpy())
+    database.append(image_gpu_index)
+    database.append(text_gpu_index)
+    #database.append(image_cpu_index)
+    #database.append(text_cpu_index)
+    print("Adding indices done!")
 
     # Log and save params.
     if is_master(args):
@@ -110,11 +133,12 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         preprocess_train = _transform(model.visual.input_resolution, is_train=True)
         preprocess_val = _transform(model.visual.input_resolution, is_train=False)
     try:
-        #img2text = IM2TEXT(embed_dim=model.embed_dim, 
-        #                   middle_dim=args.middle_dim, 
-        #                   output_dim=model.token_embedding.weight.shape[1], 
-        #                   n_layer=args.n_layer)
-        img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1])
+        img2text = IM2TEXT(embed_dim=model.embed_dim, 
+                           middle_dim=args.middle_dim, 
+                           output_dim=model.token_embedding.weight.shape[1], 
+                           n_layer=args.n_layer)
+        retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
+        #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1])
         #img2text = T2I(embed_dim=model.token_embedding.weight.shape[1], 
         #                   middle_dim=args.middle_dim, 
         #                   output_dim=model.visual.proj.shape[0], 
@@ -134,13 +158,16 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     if not torch.cuda.is_available():
         model.float()
         img2text.float()
+        retrieval_fuse.float()
         logging.warning("using CPU, this will be slow")
     else:
         model.cuda(args.gpu)
         img2text.cuda(args.gpu)
+        retrieval_fuse.cuda(args.gpu)
         if args.precision == "fp16":
             convert_weights(model)
             convert_weights(img2text)
+            convert_weights(retrieval_fuse)
         # Previously batch size and workers were global and not per GPU.
         # args.batch_size = args.batch_size / ngpus_per_node)
         # args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
@@ -153,18 +180,23 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             torch.cuda.synchronize()
             img2text = torch.nn.parallel.DistributedDataParallel(img2text, device_ids=[args.gpu], find_unused_parameters=False)
             torch.cuda.synchronize()
+            retrieval_fuse = torch.nn.parallel.DistributedDataParallel(retrieval_fuse, device_ids=[args.gpu], find_unused_parameters=False)
+            torch.cuda.synchronize()
         if args.dp:
             model = torch.nn.DataParallel(model, device_ids=args.multigpu)
             img2text = torch.nn.DataParallel(img2text, device_ids=args.multigpu)
+            retrieval_fuse = torch.nn.DataParallel(retrieval_fuse, device_ids=args.multigpu)
         if args.precision == "fp16":
             convert_weights(model)
             convert_weights(img2text)
+            convert_weights(retrieval_fuse)
 
 
     data = get_data(args, (preprocess_train, preprocess_val))
     exclude = lambda n : "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
     include = lambda n : not exclude(n)
     named_parameters = list(img2text.named_parameters())
+    named_parameters = named_parameters + list(retrieval_fuse.named_parameters())
     gain_or_bias_params = [p for n, p in named_parameters if exclude(n) and p.requires_grad]
     rest_params = [p for n, p in named_parameters if include(n) and p.requires_grad]
 
@@ -209,12 +241,16 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             start_epoch = checkpoint["epoch"]
             sd = checkpoint["state_dict"]
             sd_img2text = checkpoint["state_dict_img2text"]
+            sd_retrieval_fuse = checkpoint["state_dict_retrieval_fuse"]
             if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                 sd = {k[len('module.'):]: v for k, v in sd.items()}
             if not args.distributed and next(iter(sd_img2text.items()))[0].startswith('module'):
                 sd_img2text = {k[len('module.'):]: v for k, v in sd_img2text.items()}
+            if not args.distributed and next(iter(sd_retrieval_fuse.items()))[0].startswith('module'):
+                sd_retrieval_fuse = {k[len('module.'):]: v for k, v in sd_retrieval_fuse.items()}
             model.load_state_dict(sd)
             img2text.load_state_dict(sd_img2text)
+            retrieval_fuse.load_state_dict(sd_retrieval_fuse)
             if optimizer is not None:
                 optimizer.load_state_dict(checkpoint["optimizer"])
             logging.info(
@@ -255,7 +291,11 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     for epoch in range(start_epoch, args.epochs):
         if args.gpu == 0:
             logging.info(f'Start epoch {epoch}')
-        train(model, img2text, data, epoch, optimizer, scaler, scheduler, args, writer)
+        if args.pre_save_feature:
+            save_feature(model, img2text, data, epoch, optimizer, scaler, scheduler, args, writer)
+            break
+        else:
+            train(model, img2text, retrieval_fuse, data, epoch, optimizer, scaler, scheduler, args, writer,database=database)
         steps = data["train"].dataloader.num_batches * (epoch + 1)        
         # Saving checkpoints.
         if args.save_logs and (args.gpu == 0 or (not args.distributed)):
@@ -268,6 +308,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
                         "name": args.name,
                         "state_dict": model.state_dict(),
                         "state_dict_img2text": img2text.state_dict(),
+                        "state_dict_retrieval_fuse": retrieval_fuse.state_dict(),
                         "optimizer": optimizer.state_dict(),
                     },
                     os.path.join(args.checkpoint_path, f"epoch_{epoch + 1}.pt"),
@@ -279,6 +320,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
                         "name": args.name,
                         "state_dict": model.state_dict(),
                         "state_dict_img2text": img2text.state_dict(),
+                        "state_dict_retrieval_fuse": retrieval_fuse.state_dict(),
                         "optimizer": optimizer.state_dict(),
                     },
                     os.path.join(args.checkpoint_path, "epoch_latest.pt"),
@@ -295,10 +337,12 @@ def main():
     cudnn.deterministic = True
     #cudnn.benchmark = True
     #cudnn.deterministic = False
+    
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)    
     torch.cuda.manual_seed_all(args.seed) 
     random.seed(args.seed)
+    
     torch.use_deterministic_algorithms(True)
     # get the name of the experiments
     if args.name is None:
@@ -372,20 +416,44 @@ def main():
     
     #pdb.set_trace()
     
+    # We load database here.
+    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database")
+    print("Loading databases!")
+    dataloader = DataLoader(Base_dataset, batch_size=512, shuffle=False, num_workers=10)
+    database = {}
+    image_bases = []
+    text_bases = []
+    for batch in dataloader:
+        batch_cp = copy.deepcopy(batch)  
+        del batch 
+        image_base, text_base = batch_cp[0], batch_cp[1]
+        image_bases.append(image_base)
+        text_bases.append(text_base)
+    image_bases = torch.cat(image_bases,dim=0)
+    text_bases = torch.cat(text_bases,dim=0)
+    image_bases = image_bases.cpu()
+    text_bases = text_bases.cpu()
+    image_bases = image_bases / image_bases.norm(dim=1, keepdim=True)
+    text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
+    database = [image_bases,text_bases]
+    torch.cuda.empty_cache()
+    print("Loading databases done!")
+    #pdb.set_trace()
+
     # Distributed training = training on more than one GPU.
     # Also easily possible to extend to multiple nodes & multiple GPUs.
     args.distributed = (args.gpu is None) and torch.cuda.is_available() and (not args.dp)
     if args.distributed:
         ngpus_per_node = torch.cuda.device_count()
         args.world_size = ngpus_per_node
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, log_queue, args))
+        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, log_queue, args, database))
     else:
         if args.dp:
             args.gpu = args.multigpu[0]
             args.world_size = len(args.multigpu)
         else:
             args.world_size = 1
-        main_worker(args.gpu, None, log_queue, args)
+        main_worker(args.gpu, None, log_queue, args,database=database)
 
 
 if __name__ == "__main__":
