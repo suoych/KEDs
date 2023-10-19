@@ -41,6 +41,23 @@ from torch.utils.data import Dataset
 from data import CsvDataset, CustomFolder, ImageList, CsvCOCO, FashionIQ, CIRR, CIRCODataset, collate_fn
 import pandas as pd
 from sklearn.cluster import KMeans
+import json
+
+
+
+
+cap_dict = {}
+with open("cc3m_have_good.pkl","rb") as f_g:
+    img_cap_list_good = pickle.load(f_g)
+
+with open("cc3m_have.pkl","rb") as f:
+    img_cap_list = pickle.load(f)
+
+for i in range(len(img_cap_list_good)):
+    cap_dict[img_cap_list_good[i]['filename']] = img_cap_list_good[i]['text']
+
+for i in range(len(img_cap_list)):
+    cap_dict[img_cap_list[i]['filename']] = img_cap_list[i]['text']
 
 def get_templates():
     """
@@ -156,6 +173,22 @@ def get_retrieved_features(feature, database,args,topk=16):
     
     return topk_image_features, topk_text_features
 
+
+def retrieved_captions(feature, database,args,topk=4,use_faiss=True):
+    """
+    Retrieve features from database according to the given feature. 
+    By default we use faiss-gpu to boost inference speed.
+    """
+    image_base, text_base,basenames, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4]
+    
+    feature = feature / feature.norm(dim=1, keepdim=True)
+
+    _, topk_text_indices = text_gpu_index.search(feature.clone().cpu().numpy(), topk) # search topk
+    b,k = topk_text_indices.shape[0],topk_text_indices.shape[1]
+    topk_captions = [basenames[i] for i in topk_text_indices.reshape(-1).tolist()]
+    topk_caption_basenames = [topk_captions[i:i+k] for i in range(0, b*k, k)]
+    return topk_caption_basenames
+
 def prepare_img(img_file, transform):
     return transform(Image.open(img_file))
 
@@ -264,7 +297,7 @@ def make_html(prompts, query_image, images, path_html):
     #f.write(html_all)
 
 
-def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, database, args, prompt, query_loader, target_loader):
+def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, text_condition,database, args, prompt, query_loader, target_loader):
     if not is_master(args):
         return
     model.eval()
@@ -346,8 +379,11 @@ def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, database, args, p
                 topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
                 topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
                 fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_image_features,topk_image_features)
-                #fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_text_features,topk_text_features)
-                fused_features = image_features #fused_features.squeeze(1) + image_features
+                text_conditioned = text_condition(image_features.unsqueeze(1), topk_text_features,topk_text_features)
+                fused_features = torch.cat([fused_features,text_conditioned,image_features.unsqueeze(1),text_only_features.unsqueeze(1)],dim=1)
+                #token_features = img2text(image_features)
+
+
                 image_features_query = img2text(fused_features)                      
                 composed_feature = m.encode_text_img_retrieval(text, image_features_query, split_ind=id_split)                            
                 composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
@@ -393,7 +429,7 @@ def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, database, args, p
     return metrics
 
 
-def evaluate_coco(model, img2text, retrieval_fuse, database, args, loader):
+def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args, loader):
     if not is_master(args):
         return
     model.eval()
@@ -422,6 +458,7 @@ def evaluate_coco(model, img2text, retrieval_fuse, database, args, loader):
             image_features = m.encode_image(images)             
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
             id_split = tokenize(["*"])[0][1]
+            pdb.set_trace()
             query_image_features = m.encode_image(region_images)
             #query_image_tokens = img2text(query_image_features)          
             #composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                        
@@ -481,7 +518,7 @@ def evaluate_coco(model, img2text, retrieval_fuse, database, args, loader):
     return metrics
 
 
-def evaluate_cirr(model, img2text, retrieval_fuse, database, args, query_loader, target_loader):
+def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args, query_loader, target_loader):
     if not is_master(args):
         return
     model.eval()
@@ -501,7 +538,11 @@ def evaluate_cirr(model, img2text, retrieval_fuse, database, args, query_loader,
 
     m = model.module if args.distributed or args.dp else model
     logit_scale = m.logit_scale.exp()
-    logit_scale = logit_scale.mean()   
+    logit_scale = logit_scale.mean()  
+
+    all_prompt_dict = {}
+    with open("/home/yucheng/overall_captions/cirr/answer_dict.json","r") as f: 
+        all_answer_dict = json.load(f)
 
     #dictionary_embeddings, concept_texts = get_dict_embedding(m,args)
 
@@ -516,8 +557,9 @@ def evaluate_cirr(model, img2text, retrieval_fuse, database, args, query_loader,
             for path in target_paths:
                 all_target_paths.append(path)
 
+        all_modi_dict = {}
         for batch in tqdm(query_loader):
-            ref_images, text_with_blank, caption_only, ref_paths, answer_paths, raw_captions = batch
+            ref_images, text_with_blank, caption_only, ref_paths, answer_paths, raw_captions, target_cap = batch
             if args.gpu is not None:
                 ref_images = ref_images.cuda(args.gpu, non_blocking=True)
                 text_with_blank = text_with_blank.cuda(args.gpu, non_blocking=True)
@@ -531,6 +573,14 @@ def evaluate_cirr(model, img2text, retrieval_fuse, database, args, query_loader,
                 all_raw_captions.append(cap)
             
             #pdb.set_trace()
+            all_llm_cap = []
+            for ref_path in ref_paths:
+                image_basename = ref_path.split(".")[0]
+                all_llm_cap.append(all_answer_dict[image_basename])
+            all_llm_cap = tokenize(all_llm_cap)
+            all_llm_cap = all_llm_cap.cuda(args.gpu, non_blocking=True)
+            all_llm_cap = m.encode_text(all_llm_cap)
+            
 
             caption_features = m.encode_text(caption_only)
             ## Composed features
@@ -540,11 +590,16 @@ def evaluate_cirr(model, img2text, retrieval_fuse, database, args, query_loader,
             topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
             topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
             topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+
             fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            fused_features = fused_features.squeeze(1) + query_image_features
+            text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
+            fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),caption_features.unsqueeze(1)],dim=1)
+
             query_image_tokens  = img2text(fused_features)                      
             composed_feature = m.encode_text_img_retrieval(text_with_blank, query_image_tokens, split_ind=id_split, repeat=False)                            
-            composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+            composed_feature = composed_feature #+ 0.05 * all_llm_cap #+ 0.03 * caption_features
+
+            #composed_feature = all_llm_cap
                         
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
@@ -559,6 +614,35 @@ def evaluate_cirr(model, img2text, retrieval_fuse, database, args, query_loader,
             all_mixture_features.append(mixture_features) 
             #all_gt_text_features.append(gt_text_features_normed)
             #pdb.set_trace()    
+
+            """
+            #pdb.set_trace()
+            # save overall caption
+            topk_caption_basenames = retrieved_captions(query_image_features,database,args)
+            all_prompt = []
+            for i, ref_path in enumerate(ref_paths):
+                image_basename = ref_path.split(".")[0]
+                names = topk_caption_basenames[i]
+                captions_for_image = ""
+                for name in names:
+                    cc_base = name.split(".")[0]
+                    captions_for_image += cap_dict[cc_base]
+                all_prompt.append("Here are four captions for an image: "+captions_for_image+". A short caption for the image is:")
+                all_prompt_dict[image_basename] = "Here are four captions for an image: "+captions_for_image+". A short caption for the image is:"
+            """
+
+            #for i, ref_path in enumerate(ref_paths):
+            #    image_basename = ref_path.split(".")[0]
+            #    modi_cap = target_cap[i]
+            #    all_modi_dict[image_basename] = modi_cap
+        #with open("/home/yucheng/overall_captions/cirr/prompt_dict.json","w") as f:
+        #    json.dump(all_prompt_dict,f)
+        #with open("/home/yucheng/overall_captions/cirr/modi_dict.json","w") as f:
+        #    json.dump(all_modi_dict,f)
+        #pdb.set_trace()
+            
+
+
 
         #pdb.set_trace()            
             #for j in range(image_features.shape[0]):
@@ -593,7 +677,7 @@ def evaluate_cirr(model, img2text, retrieval_fuse, database, args, query_loader,
     return metrics
 
 
-def evaluate_cirr_test(model, img2text, retrieval_fuse, database, args, query_loader, target_loader):
+def evaluate_cirr_test(model, img2text, retrieval_fuse, text_condition,database, args, query_loader, target_loader):
     if not is_master(args):
         return
     model.eval()
@@ -648,10 +732,11 @@ def evaluate_cirr_test(model, img2text, retrieval_fuse, database, args, query_lo
             topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
             topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
             fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            fused_features = fused_features.squeeze(1) + query_image_features
+            fused_features = fused_features.squeeze(1) + query_image_features + caption_features
             query_image_tokens  = img2text(fused_features)                      
             composed_feature = m.encode_text_img_retrieval(text_with_blank, query_image_tokens, split_ind=id_split, repeat=False)                            
-            composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+            #composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+            composed_feature = composed_feature + 0.05 * caption_features
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
             caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
@@ -689,7 +774,7 @@ def evaluate_cirr_test(model, img2text, retrieval_fuse, database, args, query_lo
     return res_all
 
 
-def evaluate_fashion(model, img2text, retrieval_fuse, database, args, source_loader, target_loader):
+def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, args, source_loader, target_loader):
     if not is_master(args):
         return
     model.eval()
@@ -744,10 +829,10 @@ def evaluate_fashion(model, img2text, retrieval_fuse, database, args, source_loa
             topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
             topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
             fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            fused_features = query_image_features #fused_features.squeeze(1) + query_image_features
+            fused_features = fused_features.squeeze(1) + query_image_features + caption_features
             query_image_tokens  = img2text(fused_features)                      
             composed_feature = m.encode_text_img_retrieval(target_caption, query_image_tokens, split_ind=id_split, repeat=False)                            
-            composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+            #composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
             
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
@@ -919,10 +1004,10 @@ def get_metrics_imgnet(query_features, image_features, query_labels, target_labe
 
 
 @torch.no_grad()
-def circo_generate_val_predictions(model, img2text, retrieval_fuse, database, relative_val_dataset,args) -> Tuple[torch.Tensor, List[str], list]:
+def circo_generate_val_predictions(model, img2text, retrieval_fuse, text_condition,database, relative_val_dataset,args) -> Tuple[torch.Tensor, List[str], list]:
     #Generates features predictions for the validation set of CIRCO
     # Create the data loader
-    relative_val_loader = DataLoader(dataset=relative_val_dataset, batch_size=128, num_workers=16,
+    relative_val_loader = DataLoader(dataset=relative_val_dataset, batch_size=128, num_workers=0,
                                      pin_memory=False, collate_fn=collate_fn, shuffle=False)
 
     predicted_features_list = []
@@ -953,14 +1038,21 @@ def circo_generate_val_predictions(model, img2text, retrieval_fuse, database, re
         text = text.cuda(args.gpu, non_blocking=True)
         reference_images = reference_images.cuda(args.gpu, non_blocking=True)
         query_image_features = model.encode_image(reference_images)
+
+        text_feature = model.encode_text(text)
         
         
         # calculate the composed feature
         topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
         topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
         topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+        #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
+        #fused_features =  fused_features.squeeze(1) + query_image_features + text_feature
+
         fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-        fused_features = fused_features.squeeze(1) + query_image_features
+        text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
+        fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),text_feature.unsqueeze(1)],dim=1)
+   
         query_image_tokens  = img2text(fused_features)                      
         composed_feature = model.encode_text_img_retrieval(text, query_image_tokens, split_ind=id_split, repeat=False)                            
         composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
@@ -991,11 +1083,11 @@ def circo_generate_val_predictions(model, img2text, retrieval_fuse, database, re
     return predicted_features, target_names_list, gts_img_ids_list
 
 @torch.no_grad()
-def circo_compute_val_metrics(relative_val_dataset, clip_model, img2text, retrieval_fuse, database, index_features,
+def circo_compute_val_metrics(relative_val_dataset, clip_model, img2text, retrieval_fuse, text_condition, database, index_features,
                               index_names,args) -> Dict[str, float]:
     #Compute the retrieval metrics on the CIRCO validation set given the dataset, pseudo tokens and the reference names
     # Generate the predicted features
-    predicted_features, target_names, gts_img_ids = circo_generate_val_predictions(clip_model, img2text, retrieval_fuse, database, relative_val_dataset,args)
+    predicted_features, target_names, gts_img_ids = circo_generate_val_predictions(clip_model, img2text, retrieval_fuse, text_condition, database, relative_val_dataset,args)
     ap_at5 = []
     ap_at10 = []
     ap_at25 = []
@@ -1057,11 +1149,11 @@ def circo_compute_val_metrics(relative_val_dataset, clip_model, img2text, retrie
 
 
 @torch.no_grad()
-def circo_val_retrieval(dataset_path, model, img2text, retrieval_fuse, database, preprocess: callable, args) -> Dict[str, float]:
+def circo_val_retrieval(dataset_path, model, img2text, retrieval_fuse, text_condition, database, preprocess: callable, args) -> Dict[str, float]:
     #Compute the retrieval metrics on the CIRCO validation set given the pseudo tokens and the reference names
     # model parameter represents the loaded CLIP model
-    if not is_master(args):
-        return
+    #if not is_master(args):
+    #    return
     model.eval()
     img2text.eval()
     model = model.module if args.distributed or args.dp else model
@@ -1069,17 +1161,18 @@ def circo_val_retrieval(dataset_path, model, img2text, retrieval_fuse, database,
     logit_scale = logit_scale.mean() 
     # Extract the index features
     classic_val_dataset = CIRCODataset(dataset_path, 'val', 'classic', preprocess)
-    index_features, index_names = extract_image_features(classic_val_dataset, model, args)
+    #index_features, index_names = extract_image_features(classic_val_dataset, model, args)
+    index_features, index_names = load_circo_features(classic_val_dataset, model, args)
 
     # Define the relative validation dataset
     relative_val_dataset = CIRCODataset(dataset_path, 'val', 'relative', preprocess)
 
-    return circo_compute_val_metrics(relative_val_dataset, model, img2text, retrieval_fuse, database, index_features, index_names,args)
+    return circo_compute_val_metrics(relative_val_dataset, model, img2text, retrieval_fuse, text_condition, database, index_features, index_names, args)
 
 
 @torch.no_grad()
 def extract_image_features(dataset, clip_model, args, batch_size: Optional[int] = 128,
-                           num_workers: Optional[int] = 16) -> Tuple[torch.Tensor, List[str]]:
+                           num_workers: Optional[int] = 0) -> Tuple[torch.Tensor, List[str]]:
     """
     Extracts image features from a dataset using a CLIP model.
     """
@@ -1093,6 +1186,8 @@ def extract_image_features(dataset, clip_model, args, batch_size: Optional[int] 
         print(f"extracting image features {dataset.__class__.__name__} - {dataset.split}")
     except Exception as e:
         pass
+
+    pdb.set_trace()
 
     # Extract features
     for batch in tqdm(loader):
@@ -1110,4 +1205,16 @@ def extract_image_features(dataset, clip_model, args, batch_size: Optional[int] 
             index_names.extend(names)
 
     index_features = torch.vstack(index_features)
+    pdb.set_trace()
+    return index_features, index_names
+
+@torch.no_grad()
+def load_circo_features(dataset, clip_model, args, batch_size: Optional[int] = 128,
+                           num_workers: Optional[int] = 0) -> Tuple[torch.Tensor, List[str]]:
+    """
+    Extracts image features from a dataset using a CLIP model.
+    """
+    loaded_data = torch.load("/home/yucheng/comp_data/circo_feature.pt")
+    index_features = loaded_data["index_features"]
+    index_names = loaded_data["index_names"]
     return index_features, index_names

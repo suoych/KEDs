@@ -49,6 +49,9 @@ import pickle
 from model.clip import _transform, load
 #np.random.seed(0)
 #random.seed(0)
+from typing import List, Optional
+from llama import Llama, Dialog
+
 
 
 cap_dict = {}
@@ -470,7 +473,7 @@ class CIRR(Dataset):
             #print("target_cap: ",target_cap, ". text_with_blank:",text_with_blank)            
             return ref_images, ref_text_tokens, caption_only, \
                 str(self.ref_imgs[idx]), str(self.target_imgs[idx]), \
-                    text_with_blank #target_cap                       
+                    text_with_blank, target_cap                       
         else:
             tar_path = str(self.target_imgs[idx])
             img_path = os.path.join(self.root_img, tar_path)
@@ -796,7 +799,7 @@ class LoadDataBase(Dataset):
         text_path = os.path.join(self.text_folder, self.image_lists[index])
         image_sample = torch.load(str(image_path), map_location=torch.device('cpu'))
         text_sample = torch.load(str(text_path), map_location=torch.device('cpu'))
-        return image_sample,text_sample
+        return image_sample,text_sample, self.image_lists[index]
 
 class CsvDataset(Dataset):
     def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t",

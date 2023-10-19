@@ -19,7 +19,7 @@ from time import gmtime, strftime
 from pathlib import Path
 import json
 from functools import partial
-import wandb
+#import wandb
 import torch
 from torch import optim
 import torch.distributed as dist
@@ -52,6 +52,7 @@ def load_model(args):
                        output_dim=model.token_embedding.weight.shape[1],
                        n_layer=args.n_layer)
     retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
+    text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
     #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1]) 
     #img2text = T2I(embed_dim=model.token_embedding.weight.shape[1], 
     #                       middle_dim=args.middle_dim, 
@@ -65,15 +66,18 @@ def load_model(args):
         model.float()
         img2text.float()
         retrieval_fuse.float()
+        text_condition.float()
         logging.warning("using CPU, this will be slow")
     else:
         model.cuda(args.gpu)
         img2text.cuda(args.gpu)
         retrieval_fuse.cuda(args.gpu)
+        text_condition.cuda(args.gpu)
         if args.precision == "fp16":
             convert_weights(model)
             convert_weights(img2text)
             convert_weights(retrieval_fuse)
+            convert_weights(text_condition)
         # Previously batch size and workers were global and not per GPU.
         # args.batch_size = args.batch_size / ngpus_per_node)
         # args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
@@ -88,15 +92,19 @@ def load_model(args):
                 device_ids=[args.gpu], find_unused_parameters=False)
             retrieval_fuse = torch.nn.parallel.DistributedDataParallel(retrieval_fuse, 
                 device_ids=[args.gpu], find_unused_parameters=False)
+            text_condition = torch.nn.parallel.DistributedDataParallel(text_condition, 
+                device_ids=[args.gpu], find_unused_parameters=False)
         if args.dp:
             model = torch.nn.DataParallel(model, device_ids=args.multigpu)
             img2text = torch.nn.DataParallel(img2text, device_ids=args.multigpu)
             retrieval_fuse = torch.nn.DataParallel(retrieval_fuse, device_ids=args.multigpu)
+            text_condition = torch.nn.DataParallel(text_condition, device_ids=args.multigpu)
         
         if args.precision == "fp16":
             convert_weights(model)
             convert_weights(img2text)
             convert_weights(retrieval_fuse)
+            convert_weights(text_condition)
     if args.resume == 'auto':
         checkpoint_list = os.listdir(args.checkpoint_path)
         checkpoint_list = [ckpt for ckpt in checkpoint_list if ckpt.startswith('epoch')]
@@ -117,24 +125,28 @@ def load_model(args):
         sd = checkpoint["state_dict"]
         sd_img2text = checkpoint["state_dict_img2text"]
         sd_retrieval_fuse = checkpoint["state_dict_retrieval_fuse"]
+        sd_text_condition = checkpoint["state_dict_text_condition"]
         if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
             sd = {k[len('module.'):]: v for k, v in sd.items()}
         if not args.distributed and next(iter(sd_img2text.items()))[0].startswith('module'):
             sd_img2text = {k[len('module.'):]: v for k, v in sd_img2text.items()}
         if not args.distributed and next(iter(sd_retrieval_fuse.items()))[0].startswith('module'):
             sd_retrieval_fuse = {k[len('module.'):]: v for k, v in sd_retrieval_fuse.items()}
+        if not args.distributed and next(iter(sd_text_condition.items()))[0].startswith('module'):
+            sd_text_condition = {k[len('module.'):]: v for k, v in sd_text_condition.items()}
         model.load_state_dict(sd,strict=False) # manually load weights for masked visual transformers
         #with torch.no_grad():
         #    for a_param, b_param in zip(model.visual.parameters(), model.visual_mask.parameters()):
         #        b_param.copy_(a_param)
         img2text.load_state_dict(sd_img2text)
         retrieval_fuse.load_state_dict(sd_retrieval_fuse)
+        text_condition.load_state_dict(sd_text_condition)
         logging.info(
             f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})"
         )
     else:
         logging.info("=> no checkpoint found at '{}'".format(args.resume))
-    return model, img2text, retrieval_fuse, preprocess_val
+    return model, img2text, retrieval_fuse, text_condition, preprocess_val
 
 def setup_log_save(args):
     if is_master(args):
@@ -167,32 +179,35 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     # Log and save params.
     setup_log_save(args)
     # Load trained model
-    model, img2text, retrieval_fuse, preprocess_val = load_model(args)
+    model, img2text, retrieval_fuse,text_condition, preprocess_val = load_model(args)
     cudnn.benchmark = True
     cudnn.deterministic = False   
     #root_project = os.path.join(get_project_root(), 'data')
     root_project = "/home/yucheng/comp_data"
 
     # We load database here.
-    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database")
+    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database") #dino_cc_database")
     print("Loading databases!")
     dataloader = DataLoader(Base_dataset, batch_size=256, shuffle=False, num_workers=10)
     database = {}
     image_bases = []
     text_bases = []
+    basenames = []
     for batch in dataloader:
         batch_cp = copy.deepcopy(batch)  
         del batch 
-        image_base, text_base = batch_cp[0], batch_cp[1]
+        image_base, text_base, basename = batch_cp[0], batch_cp[1],batch_cp[2]
         image_bases.append(image_base)
         text_bases.append(text_base)
+        for item in basename:
+            basenames.append(item)
     image_bases = torch.cat(image_bases,dim=0)
     text_bases = torch.cat(text_bases,dim=0)
     image_bases = image_bases.cpu()
     text_bases = text_bases.cpu()
     image_bases = image_bases / image_bases.norm(dim=1, keepdim=True)
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
-    database = [image_bases,text_bases]
+    database = [image_bases,text_bases,basenames]
     ngpus = faiss.get_num_gpus()
     print("number of GPUs:", ngpus)
     image_cpu_index = faiss.IndexFlatL2(768)
@@ -230,7 +245,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         num_workers=args.workers,
         pin_memory=True,
         drop_last=False)
-        evaluate_coco(model, img2text, retrieval_fuse,database, args, source_dataloader)
+        evaluate_coco(model, img2text, retrieval_fuse,text_condition,database, args, source_dataloader)
 
     elif args.eval_mode == 'cirr':
         source_dataset = CIRR(transforms=preprocess_val, 
@@ -255,6 +270,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         evaluate_cirr(model, 
                       img2text,
                       retrieval_fuse, 
+                      text_condition,
                       database,
                       args, 
                       source_dataloader, 
@@ -284,6 +300,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         results = evaluate_cirr_test(model, 
                                      img2text, 
                                      retrieval_fuse,
+                                     text_condition,
                                      database,
                                      args, 
                                      source_dataloader, 
@@ -316,7 +333,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             num_workers=args.workers,
             pin_memory=True,
             drop_last=False)
-        evaluate_fashion(model, img2text, retrieval_fuse, database, args, source_dataloader, target_dataloader)
+        evaluate_fashion(model, img2text, retrieval_fuse, text_condition, database, args, source_dataloader, target_dataloader)
     elif args.eval_mode == 'imgnet':
         domains = ['cartoon', 'origami', 'toy', 'sculpture']
         prompt = ["a {} of *".format(domain) for domain in domains]
@@ -340,11 +357,11 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             num_workers=args.workers,
             pin_memory=True,
             drop_last=False)
-        eval_func(model, img2text, retrieval_fuse, database, args, prompt, source_dataloader, target_dataloader)
+        eval_func(model, img2text, retrieval_fuse, text_condition, database, args, prompt, source_dataloader, target_dataloader)
     elif args.eval_mode == 'circo':
         circo_path = os.path.join(root_project, 'CIRCO')
         relative_val_dataset = CIRCODataset(circo_path, 'val', 'relative', preprocess_val)
-        circo_metrics = circo_val_retrieval(circo_path, model, img2text, retrieval_fuse, database, preprocess_val,args)
+        circo_metrics = circo_val_retrieval(circo_path, model, img2text, retrieval_fuse, text_condition, database, preprocess_val,args)
         for k, v in circo_metrics.items():
             print(f"{k} = {v:.2f}")
 

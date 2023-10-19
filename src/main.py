@@ -138,6 +138,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
                            output_dim=model.token_embedding.weight.shape[1], 
                            n_layer=args.n_layer)
         retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
+        text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
         #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1])
         #img2text = T2I(embed_dim=model.token_embedding.weight.shape[1], 
         #                   middle_dim=args.middle_dim, 
@@ -159,15 +160,18 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
         model.float()
         img2text.float()
         retrieval_fuse.float()
+        text_condition.float()
         logging.warning("using CPU, this will be slow")
     else:
         model.cuda(args.gpu)
         img2text.cuda(args.gpu)
         retrieval_fuse.cuda(args.gpu)
+        text_condition.cuda(args.gpu)
         if args.precision == "fp16":
             convert_weights(model)
             convert_weights(img2text)
             convert_weights(retrieval_fuse)
+            convert_weights(text_condition)
         # Previously batch size and workers were global and not per GPU.
         # args.batch_size = args.batch_size / ngpus_per_node)
         # args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
@@ -182,14 +186,18 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
             torch.cuda.synchronize()
             retrieval_fuse = torch.nn.parallel.DistributedDataParallel(retrieval_fuse, device_ids=[args.gpu], find_unused_parameters=False)
             torch.cuda.synchronize()
+            text_condition = torch.nn.parallel.DistributedDataParallel(text_condition, device_ids=[args.gpu], find_unused_parameters=False)
+            torch.cuda.synchronize()
         if args.dp:
             model = torch.nn.DataParallel(model, device_ids=args.multigpu)
             img2text = torch.nn.DataParallel(img2text, device_ids=args.multigpu)
             retrieval_fuse = torch.nn.DataParallel(retrieval_fuse, device_ids=args.multigpu)
+            text_condition = torch.nn.DataParallel(text_condition, device_ids=args.multigpu)
         if args.precision == "fp16":
             convert_weights(model)
             convert_weights(img2text)
             convert_weights(retrieval_fuse)
+            convert_weights(text_condition)
 
 
     data = get_data(args, (preprocess_train, preprocess_val))
@@ -197,6 +205,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
     include = lambda n : not exclude(n)
     named_parameters = list(img2text.named_parameters())
     named_parameters = named_parameters + list(retrieval_fuse.named_parameters())
+    named_parameters = named_parameters + list(text_condition.named_parameters())
     gain_or_bias_params = [p for n, p in named_parameters if exclude(n) and p.requires_grad]
     rest_params = [p for n, p in named_parameters if include(n) and p.requires_grad]
 
@@ -242,15 +251,19 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
             sd = checkpoint["state_dict"]
             sd_img2text = checkpoint["state_dict_img2text"]
             sd_retrieval_fuse = checkpoint["state_dict_retrieval_fuse"]
+            sd_text_condition = checkpoint["state_dict_text_condition"]
             if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                 sd = {k[len('module.'):]: v for k, v in sd.items()}
             if not args.distributed and next(iter(sd_img2text.items()))[0].startswith('module'):
                 sd_img2text = {k[len('module.'):]: v for k, v in sd_img2text.items()}
             if not args.distributed and next(iter(sd_retrieval_fuse.items()))[0].startswith('module'):
                 sd_retrieval_fuse = {k[len('module.'):]: v for k, v in sd_retrieval_fuse.items()}
+            if not args.distributed and next(iter(sd_text_condition.items()))[0].startswith('module'):
+                sd_text_condition = {k[len('module.'):]: v for k, v in sd_text_condition.items()}
             model.load_state_dict(sd)
             img2text.load_state_dict(sd_img2text)
             retrieval_fuse.load_state_dict(sd_retrieval_fuse)
+            text_condition.load_state_dict(sd_text_condition)
             if optimizer is not None:
                 optimizer.load_state_dict(checkpoint["optimizer"])
             logging.info(
@@ -295,7 +308,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
             save_feature(model, img2text, data, epoch, optimizer, scaler, scheduler, args, writer)
             break
         else:
-            train(model, img2text, retrieval_fuse, data, epoch, optimizer, scaler, scheduler, args, writer,database=database)
+            train(model, img2text, retrieval_fuse,text_condition, data, epoch, optimizer, scaler, scheduler, args, writer,database=database)
         steps = data["train"].dataloader.num_batches * (epoch + 1)        
         # Saving checkpoints.
         if args.save_logs and (args.gpu == 0 or (not args.distributed)):
@@ -309,6 +322,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
                         "state_dict": model.state_dict(),
                         "state_dict_img2text": img2text.state_dict(),
                         "state_dict_retrieval_fuse": retrieval_fuse.state_dict(),
+                        "state_dict_text_condition": text_condition.state_dict(),
                         "optimizer": optimizer.state_dict(),
                     },
                     os.path.join(args.checkpoint_path, f"epoch_{epoch + 1}.pt"),
@@ -321,6 +335,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
                         "state_dict": model.state_dict(),
                         "state_dict_img2text": img2text.state_dict(),
                         "state_dict_retrieval_fuse": retrieval_fuse.state_dict(),
+                        "state_dict_text_condition": text_condition.state_dict(),
                         "optimizer": optimizer.state_dict(),
                     },
                     os.path.join(args.checkpoint_path, "epoch_latest.pt"),
@@ -417,25 +432,27 @@ def main():
     #pdb.set_trace()
     
     # We load database here.
-    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database")
+    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database")#dino_cc_database") 
     print("Loading databases!")
     dataloader = DataLoader(Base_dataset, batch_size=512, shuffle=False, num_workers=10)
     database = {}
     image_bases = []
     text_bases = []
+    base_names = []
     for batch in dataloader:
         batch_cp = copy.deepcopy(batch)  
         del batch 
-        image_base, text_base = batch_cp[0], batch_cp[1]
+        image_base, text_base, basename = batch_cp[0], batch_cp[1], batch_cp[2]
         image_bases.append(image_base)
         text_bases.append(text_base)
+        base_names.append(basename)
     image_bases = torch.cat(image_bases,dim=0)
     text_bases = torch.cat(text_bases,dim=0)
     image_bases = image_bases.cpu()
     text_bases = text_bases.cpu()
     image_bases = image_bases / image_bases.norm(dim=1, keepdim=True)
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
-    database = [image_bases,text_bases]
+    database = [image_bases,text_bases, base_names]
     torch.cuda.empty_cache()
     print("Loading databases done!")
     #pdb.set_trace()

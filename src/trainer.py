@@ -118,7 +118,7 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
     By default we use faiss-gpu to boost inference speed.
     """
     if use_faiss:
-        image_base, text_base, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3]
+        image_base, text_base,basenames, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4]
         
         feature = feature / feature.norm(dim=1, keepdim=True)
         #image_base = image_base / image_base.norm(dim=1, keepdim=True)
@@ -146,7 +146,7 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
     else:
         image_base, text_base = database[0], database[1]
 
-        feature = feature / feature.norm(dim=1, keepdim=True)
+        #feature = feature / feature.norm(dim=1, keepdim=True)
         #image_base = image_base / image_base.norm(dim=1, keepdim=True)
         #text_base = text_base / text_base.norm(dim=1, keepdim=True)
 
@@ -172,17 +172,26 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
     
     return topk_image_features, topk_text_features
 
-def get_loss_img2text(model, img2text,retrieval_fuse, images, caps, loss_img, loss_txt, args, database=None):
+
+def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, args, database=None):
+    caps = tokenize(caps)
+    caps = caps.cuda(args.gpu, non_blocking=True)
     with torch.no_grad():
         image_features = model.encode_image(images)
+        cap_feature = model.encode_text(caps)
+    
     topk_image_features,topk_text_features = get_retrieved_features(image_features,database,args)
     topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
     topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+    #pdb.set_trace()
     fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_image_features,topk_image_features)
+    text_conditioned = text_condition(image_features.unsqueeze(1), topk_text_features,topk_text_features)
     #fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_text_features,topk_text_features)
-    fused_features = fused_features.squeeze(1) + image_features
+    #fused_features = fused_features.squeeze(1) + text_conditioned.squeeze(1) #+ image_features + cap_feature
+    fused_features = torch.cat([fused_features,text_conditioned,image_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
     #token_features = img2text(image_features)
     token_features = img2text(fused_features)
+
     text_features = get_text_features(model, token_features, args)
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
@@ -254,7 +263,7 @@ def get_loss_img2text(model, img2text,retrieval_fuse, images, caps, loss_img, lo
     return total_loss
 
 
-def train(model, img2text,retrieval_fuse, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None, database=None):
+def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None, database=None):
     os.environ["WDS_EPOCH"] = str(epoch)
     model.eval()
     data['train'].set_epoch(epoch)
@@ -302,13 +311,13 @@ def train(model, img2text,retrieval_fuse, data, epoch, optimizer, scaler, schedu
         # with automatic mixed precision.
         if args.precision == "amp" :#or args.precision == "fp16":
             with autocast():
-                total_loss = get_loss_img2text(m, img2text, retrieval_fuse, images, caps, loss_img, loss_txt, args, database=database)
+                total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, args, database=database)
                 scaler.scale(total_loss).backward()
                 scaler.step(optimizer)
             scaler.update()
 
         else:
-            total_loss = get_loss_img2text(m, img2text, retrieval_fuse, images, caps, loss_img, loss_txt, args, database=database)
+            total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, args, database=database)
             total_loss.backward()
             optimizer.step()
 
