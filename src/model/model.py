@@ -755,8 +755,8 @@ class CLIP(nn.Module):
         #pdb.set_trace()
         #img_tokens = img_tokens.view(b_size, 1, -1)
         #x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]:-1]], dim=1)
-        img_tokens = img_tokens.view(b_size, 4, -1)
-        x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]:-4]], dim=1)
+        img_tokens = img_tokens.view(b_size, 2, -1)
+        x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]:-2]], dim=1)
         x = x + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
@@ -765,7 +765,7 @@ class CLIP(nn.Module):
         # x.shape = [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)    
         #x = x[torch.arange(x.size(0)), collect_ind+1] @ self.text_projection
-        x = x[torch.arange(x.size(0)), collect_ind+4] @ self.text_projection
+        x = x[torch.arange(x.size(0)), collect_ind+2] @ self.text_projection
         return x              
     
     def encode_text_img_vis(self, text, img_tokens, split_ind=4):
@@ -819,7 +819,7 @@ class CLIP(nn.Module):
             #img_tokens = img_tokens.view(b_size, 1, -1)
             ind_insert = ind_insert.nonzero()[0]
             #x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:]], dim=1)
-            x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:-3]], dim=1)
+            x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:-1]], dim=1)
         #x = torch.cat([x, torch.zeros_like(x).cuda()[:, :1, :]], dim=1)
         x = x + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
@@ -829,7 +829,7 @@ class CLIP(nn.Module):
         # x.shape = [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)    
         #x = x[torch.arange(x.size(0)), collect_ind] @ self.text_projection
-        x = x[torch.arange(x.size(0)), collect_ind+3] @ self.text_projection
+        x = x[torch.arange(x.size(0)), collect_ind+1] @ self.text_projection
         return x
    
     def forward(self, image, text, extra=False):

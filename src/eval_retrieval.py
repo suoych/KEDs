@@ -52,12 +52,12 @@ def load_model(args):
                        output_dim=model.token_embedding.weight.shape[1],
                        n_layer=args.n_layer)
     retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
-    text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
+    #text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
     #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1]) 
-    #img2text = T2I(embed_dim=model.token_embedding.weight.shape[1], 
-    #                       middle_dim=args.middle_dim, 
-    #                       output_dim=model.visual.proj.shape[0], 
-    #                       n_layer=args.n_layer)
+    text_condition = T2I(embed_dim=model.token_embedding.weight.shape[1], 
+                           middle_dim=args.middle_dim, 
+                           output_dim=model.visual.proj.shape[0], 
+                           n_layer=args.n_layer)
     # See https://discuss.pytorch.org/t/valueerror-attemting-to-unscale-fp16-gradients/81372
     if args.precision == "amp" or args.precision == "fp32" or args.gpu is None:
         convert_models_to_fp32(model)

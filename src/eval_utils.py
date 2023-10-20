@@ -380,7 +380,8 @@ def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, text_condition,da
                 topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
                 fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_image_features,topk_image_features)
                 text_conditioned = text_condition(image_features.unsqueeze(1), topk_text_features,topk_text_features)
-                fused_features = torch.cat([fused_features,text_conditioned,image_features.unsqueeze(1),text_only_features.unsqueeze(1)],dim=1)
+                fused_features = torch.cat([fused_features,text_conditioned,image_features.unsqueeze(1),
+                                            text_only_features.repeat((image_features.shape[0], 1)).unsqueeze(1)],dim=1)
                 #token_features = img2text(image_features)
 
 
@@ -458,20 +459,26 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
             image_features = m.encode_image(images)             
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
             id_split = tokenize(["*"])[0][1]
-            pdb.set_trace()
+            #pdb.set_trace()
             query_image_features = m.encode_image(region_images)
             #query_image_tokens = img2text(query_image_features)          
             #composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                        
             #composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)    
-
-            
+            text_full_features = m.encode_text(text_full)
                     
+
             ## Composed feature extraction
             topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
             topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
             topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+            #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
+            #fused_features = query_image_features #fused_features.squeeze(1) + query_image_features
+
             fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            fused_features = query_image_features #fused_features.squeeze(1) + query_image_features
+            text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
+            fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),text_full_features.unsqueeze(1)],dim=1)
+
+
             query_image_tokens  = img2text(fused_features)                      
             composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                            
             composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)
@@ -479,7 +486,6 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
 
 
             ## Text only features
-            text_full_features = m.encode_text(text_full)
             text_full_features = text_full_features / text_full_features.norm(dim=-1, keepdim=True)            
             ## Query only features
             query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)                               
@@ -541,7 +547,7 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
     logit_scale = logit_scale.mean()  
 
     all_prompt_dict = {}
-    with open("/home/yucheng/overall_captions/cirr/answer_dict.json","r") as f: 
+    with open("/home/yucheng/overall_captions/cirr/answer_dict_chat.json","r") as f: 
         all_answer_dict = json.load(f)
 
     #dictionary_embeddings, concept_texts = get_dict_embedding(m,args)
@@ -576,7 +582,8 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
             all_llm_cap = []
             for ref_path in ref_paths:
                 image_basename = ref_path.split(".")[0]
-                all_llm_cap.append(all_answer_dict[image_basename])
+                all_llm_cap.append(all_answer_dict[image_basename].split("\n")[-1])
+                pdb.set_trace()
             all_llm_cap = tokenize(all_llm_cap)
             all_llm_cap = all_llm_cap.cuda(args.gpu, non_blocking=True)
             all_llm_cap = m.encode_text(all_llm_cap)
@@ -591,15 +598,17 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
             topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
             topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
 
-            fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
-            fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),caption_features.unsqueeze(1)],dim=1)
+            #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
+            #text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
+            #fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),caption_features.unsqueeze(1)],dim=1)
+            fused_features = retrieval_fuse(query_image_features.unsqueeze(1), torch.cat([topk_image_features,topk_text_features],dim=1),torch.cat([topk_image_features,topk_text_features],dim=1))
+            fused_features = torch.cat([fused_features,query_image_features.unsqueeze(1)],dim=1)
 
-            query_image_tokens  = img2text(fused_features)                      
+            query_image_tokens  = img2text(fused_features)                   
             composed_feature = m.encode_text_img_retrieval(text_with_blank, query_image_tokens, split_ind=id_split, repeat=False)                            
             composed_feature = composed_feature #+ 0.05 * all_llm_cap #+ 0.03 * caption_features
 
-            #composed_feature = all_llm_cap
+            composed_feature = all_llm_cap
                         
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
@@ -828,8 +837,13 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
             topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
             topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
             topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+
             fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            fused_features = fused_features.squeeze(1) + query_image_features + caption_features
+            text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
+            fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),caption_features.unsqueeze(1)],dim=1)
+
+            #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
+            #fused_features = fused_features.squeeze(1) + query_image_features + caption_features
             query_image_tokens  = img2text(fused_features)                      
             composed_feature = m.encode_text_img_retrieval(target_caption, query_image_tokens, split_ind=id_split, repeat=False)                            
             #composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
@@ -892,7 +906,6 @@ def get_metrics_coco(image_features, ref_features, logit_scale):
 
 def get_metrics_fashion(image_features, ref_features, target_names, answer_names):
     metrics = {}
-    pdb.set_trace()
     distances = 1 - ref_features @ image_features.T    
     sorted_indices = torch.argsort(distances, dim=-1).cpu()
     sorted_index_names = np.array(target_names)[sorted_indices]
