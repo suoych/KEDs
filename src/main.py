@@ -140,10 +140,10 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
         retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
         text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
         #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1])
-        #img2text = T2I(embed_dim=model.token_embedding.weight.shape[1], 
-        #                   middle_dim=args.middle_dim, 
-        #                   output_dim=model.visual.proj.shape[0], 
-        #                   n_layer=args.n_layer)
+        text_condition = T2I(embed_dim=model.token_embedding.weight.shape[1], 
+                           middle_dim=args.middle_dim, 
+                           output_dim=model.visual.proj.shape[0], 
+                           n_layer=args.n_layer)
         
     except:
         print("Error!!!!")

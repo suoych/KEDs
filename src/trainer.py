@@ -258,7 +258,7 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
         #image_features = model.encode_image(images)
         #cap_feature = model.encode_text(caps)
     
-    topk_image_features,topk_text_features = get_retrieved_features(image_features,database,args)
+    topk_image_features,topk_text_features = get_retrieved_features(image_features, database, args)
     topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
     topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
     #pdb.set_trace()
@@ -335,13 +335,19 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
             + gathered_ori_cap_features[:rank]
             + gathered_ori_cap_features[rank + 1 :]
         )
-        """
-        all_whole_image_features = torch.cat(
-            [whole_image_features]
-            + gathered_whole_image_features[:rank]
-            + gathered_whole_image_features[rank + 1 :]
-        )
-        """
+        
+        #all_cap_features = torch.cat(
+        #    [cap_features]
+        #    + gathered_cap_features[:rank]
+        #    + gathered_cap_features[rank + 1 :]
+        #)
+
+        #all_t2i_features = torch.cat(
+        #    [t2i_map]
+        #    + gathered_t2i_features[:rank]
+        #    + gathered_t2i_features[rank + 1 :]
+        #)
+        
         
         #ground_truth = torch.arange(len(all_image_features)).long()
         #if args.gpu is not None:
@@ -366,6 +372,20 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
         if args.gpu is not None:
             extra_target = extra_target.cuda(args.gpu, non_blocking=True)
         extra_loss = loss_extra(all_other_features, all_ori_gap_features, extra_target)
+
+        """
+        #text_mapping_loss
+        text_map_logits_per_image = logit_scale * all_cap_features @ all_t2i_features.t()
+        text_map_loss_img_val = loss_img(text_map_logits_per_image, ground_truth)
+        text_map_logits_per_text = text_map_logits_per_image.t()
+        text_map_loss_txt_val = loss_txt(text_map_logits_per_text, ground_truth)
+
+        #text_mapping_loss
+        extra_logits_per_image = logit_scale * all_t2i_features @ all_text_features.t()
+        extra_loss_img_val = loss_img(extra_logits_per_image, ground_truth)
+        extra_logits_per_text = extra_logits_per_image.t()
+        extra_loss_txt_val = loss_txt(extra_logits_per_text, ground_truth)
+        """
 
         #extra loss with whole image embedding
         #logits_per_image_extra = logit_scale * all_whole_image_features @ all_text_features.t()
