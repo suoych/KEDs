@@ -42,6 +42,53 @@ from utils import is_master, convert_models_to_fp32, TargetPad
 import pdb
 import faiss
 import copy
+import numpy as np
+import random
+
+
+def seed_everything(seed):
+    #if seed >= 10000:
+    #    raise ValueError("seed number should be less than 10000")
+    
+    # we should set different seed for different gpu so that they would not generate same data batches
+    if torch.distributed.is_initialized():
+        rank = torch.distributed.get_rank()
+    else:
+        rank = 0
+    seed = (rank * 10) + seed
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+def load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location):
+    if args.gpu is None:
+        checkpoint = torch.load(location)
+    else:
+        # Map model to be loaded to specified single gpu.
+        loc = "cuda:{}".format(args.gpu)
+        checkpoint = torch.load(location, map_location=loc)
+    sd_img2text = checkpoint["state_dict_img2text"]
+    sd_retrieval_fuse = checkpoint["state_dict_retrieval_fuse"]
+    sd_text_condition = checkpoint["state_dict_text_condition"]
+    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+        sd = {k[len('module.'):]: v for k, v in sd.items()}
+    if not args.distributed and next(iter(sd_img2text.items()))[0].startswith('module'):
+        sd_img2text = {k[len('module.'):]: v for k, v in sd_img2text.items()}
+    if not args.distributed and next(iter(sd_retrieval_fuse.items()))[0].startswith('module'):
+        sd_retrieval_fuse = {k[len('module.'):]: v for k, v in sd_retrieval_fuse.items()}
+    if not args.distributed and next(iter(sd_text_condition.items()))[0].startswith('module'):
+        sd_text_condition = {k[len('module.'):]: v for k, v in sd_text_condition.items()}
+    #with torch.no_grad():
+    #    for a_param, b_param in zip(model.visual.parameters(), model.visual_mask.parameters()):
+    #        b_param.copy_(a_param)
+    img2text.load_state_dict(sd_img2text)
+    retrieval_fuse.load_state_dict(sd_retrieval_fuse)
+    text_condition.load_state_dict(sd_text_condition)
+    logging.info(
+        f"=> loaded checkpoint '{location}' (epoch {checkpoint['epoch']})"
+    )
+    return img2text, retrieval_fuse, text_condition
 
 def load_model(args):
     model, _, preprocess_val = load(
@@ -148,6 +195,8 @@ def load_model(args):
         logging.info("=> no checkpoint found at '{}'".format(args.resume))
     return model, img2text, retrieval_fuse, text_condition, preprocess_val
 
+
+
 def setup_log_save(args):
     if is_master(args):
         logging.info("Params:")
@@ -180,12 +229,20 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     setup_log_save(args)
     # Load trained model
     model, img2text, retrieval_fuse,text_condition, preprocess_val = load_model(args)
-    cudnn.benchmark = True
-    cudnn.deterministic = False   
+    #cudnn.benchmark = True
+    #cudnn.deterministic = False   
+    cudnn.benchmark = False        # if benchmark=True, deterministic will be False
+    cudnn.deterministic = True
+    #cudnn.benchmark = True
+    #cudnn.deterministic = False
+    seed_everything(args.seed)  
+    #torch.cuda.manual_seed_all(args.seed) 
+    torch.use_deterministic_algorithms(True)
     #root_project = os.path.join(get_project_root(), 'data')
     root_project = "/home/yucheng/comp_data"
 
     # We load database here.
+    """
     Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database") #dino_cc_database")
     print("Loading databases!")
     dataloader = DataLoader(Base_dataset, batch_size=256, shuffle=False, num_workers=10)
@@ -208,6 +265,16 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     image_bases = image_bases / image_bases.norm(dim=1, keepdim=True)
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
     database = [image_bases,text_bases,basenames]
+    """
+    print("Loading databases!")
+    image_bases = torch.load("/home/yucheng/cc_image_databases.pt",map_location="cpu")
+    text_bases = torch.load("/home/yucheng/cc_text_databases.pt",map_location="cpu")
+    basenames = []
+    with open("/home/yucheng/database_names.txt", "r") as f:
+        for line in f:
+            basenames.append(line.strip())
+    database = [image_bases,text_bases,basenames]
+
     ngpus = faiss.get_num_gpus()
     print("number of GPUs:", ngpus)
     image_cpu_index = faiss.IndexFlatL2(768)
@@ -361,9 +428,21 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     elif args.eval_mode == 'circo':
         circo_path = os.path.join(root_project, 'CIRCO')
         relative_val_dataset = CIRCODataset(circo_path, 'val', 'relative', preprocess_val)
-        circo_metrics = circo_val_retrieval(circo_path, model, img2text, retrieval_fuse, text_condition, database, preprocess_val,args)
-        for k, v in circo_metrics.items():
-            print(f"{k} = {v:.2f}")
+        for j in range(1,10):
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_{j}.pt"
+            img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
+            img2text_tb = copy.deepcopy(img2text) 
+            retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
+            text_condition_tb = copy.deepcopy(text_condition)
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_{j}.pt"
+            img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
+            #pdb.set_trace()
+            img2text_l = [img2text,img2text_tb] 
+            retrieval_fuse_l = [retrieval_fuse, retrieval_fuse_tb] 
+            text_condition_l = [text_condition, text_condition_tb]
+            circo_metrics = circo_val_retrieval(circo_path, model, img2text_l, retrieval_fuse_l, text_condition_l, database, preprocess_val,args)
+            for k, v in circo_metrics.items():
+                print(f"{k} = {v:.2f}")
 
 
 def main():

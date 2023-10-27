@@ -35,12 +35,45 @@ from utils import is_master
 from torch.profiler import profile, record_function, ProfilerActivity
 import faiss
 
-def get_loss(model, images, texts, loss_img, loss_txt, args, data_identifier=-1):
-    if data_identifier == 1:
-        # ImageNet dataset
-        image_features, text_features, logit_scale = model(images, texts, extra=True)
-    else:
-        image_features, text_features, logit_scale = model(images, texts)
+def get_loss_img2text_image(model, img2text,retrieval_fuse, text_condition, images, capss, loss_img, loss_txt, loss_extra, args, database=None):
+    caps, subject, other = capss[0], capss[1], capss[2]
+    #caps = tokenize(caps)
+    #caps = caps.cuda(args.gpu, non_blocking=True)
+    with torch.no_grad():
+        image_features = images
+        ori_cap_feature = caps
+        #image_features = model.encode_image(images)
+        #cap_feature = model.encode_text(caps)
+    
+    topk_image_features,topk_text_features = get_retrieved_features(image_features,database,args)
+    topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
+    topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+    #pdb.set_trace()
+
+    mapped_features = img2text(image_features)
+    topk_image_features = img2text(topk_image_features)
+    topk_text_features = img2text(topk_text_features)
+    #cap_feature = img2text(ori_cap_feature)
+
+    fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
+    text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
+    #fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_text_features,topk_text_features)
+    #fused_features = fused_features.squeeze(1) + text_conditioned.squeeze(1) #+ image_features + cap_feature
+
+    fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)#,cap_feature.unsqueeze(1)],dim=1)
+    #token_features = img2text(image_features)
+    token_features = fused_features
+
+    text_features = get_text_features(model, token_features, args)
+
+    #other_embedded_features = get_cap_embedded_features(model, token_features,other, args)
+
+    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    #other_embedded_features = other_embedded_features / other_embedded_features.norm(dim=-1, keepdim=True)
+    #ori_cap_feature = ori_cap_feature / ori_cap_feature.norm(dim=-1, keepdim=True)
+
+    logit_scale = model.logit_scale.exp()
     logit_scale = logit_scale.mean()
     if args.distributed and args.aggregate:
         world_size = dist.get_world_size()
@@ -53,8 +86,15 @@ def get_loss(model, images, texts, loss_img, loss_txt, args, data_identifier=-1)
         gathered_text_features = [
             torch.zeros_like(text_features) for _ in range(world_size)
         ]
+        
+        #gathered_whole_image_features = [
+        #    torch.zeros_like(whole_image_features) for _ in range(world_size)
+        #]
         dist.all_gather(gathered_image_features, image_features)
         dist.all_gather(gathered_text_features, text_features)
+        #dist.all_gather(gathered_other_features, other_embedded_features)
+        #dist.all_gather(gathered_ori_cap_features, ori_cap_feature)
+        #dist.all_gather(gathered_whole_image_features, whole_image_features)
 
         all_image_features = torch.cat(
             [image_features]
@@ -66,10 +106,19 @@ def get_loss(model, images, texts, loss_img, loss_txt, args, data_identifier=-1)
             + gathered_text_features[:rank]
             + gathered_text_features[rank + 1 :]
         )
-
+        
+       
+        
         ground_truth = torch.arange(len(all_image_features)).long()
         if args.gpu is not None:
             ground_truth = ground_truth.cuda(args.gpu, non_blocking=True)
+        
+        # cosine loss
+        #target = torch.as_tensor([1])
+        #if args.gpu is not None:
+        #    target = target.cuda(args.gpu, non_blocking=True)
+        #loss_img_val = loss_img(all_image_features, all_text_features, target)
+
 
         # this is needed to send gradients back everywhere.
         # Image loss.
@@ -77,18 +126,35 @@ def get_loss(model, images, texts, loss_img, loss_txt, args, data_identifier=-1)
         loss_img_val = loss_img(logits_per_image, ground_truth)
         logits_per_text = logits_per_image.t()
         loss_txt_val = loss_txt(logits_per_text, ground_truth)
+
+        # Text loss.
+        #extra_target = torch.as_tensor([1])
+        #if args.gpu is not None:
+        #    extra_target = extra_target.cuda(args.gpu, non_blocking=True)
+        #extra_loss = loss_extra(all_other_features, all_ori_gap_features, extra_target)
+
+        #extra loss with whole image embedding
+        #logits_per_image_extra = logit_scale * all_whole_image_features @ all_text_features.t()
+        #loss_img_val_extra = loss_img(logits_per_image_extra, ground_truth)
+        #logits_per_text_extra = logits_per_image_extra.t()
+        #loss_txt_val_extra = loss_txt(logits_per_text_extra, ground_truth)
+    
     else:
         ground_truth = torch.arange(len(image_features)).long()
         if args.gpu is not None:
             ground_truth = ground_truth.cuda(args.gpu, non_blocking=True)
-
         # Image loss.
         logits_per_image = logit_scale * image_features @ text_features.t()
         loss_img_val = loss_img(logits_per_image, ground_truth)
         logits_per_text = logit_scale * text_features @ image_features.t()
         loss_txt_val = loss_txt(logits_per_text, ground_truth)
+        # Text loss.
+        extra_logits_per_image = logit_scale * ori_cap_feature @ other_embedded_features.t()
+        extra_loss_img_val = loss_img(extra_logits_per_image, ground_truth)
+        extra_logits_per_text = extra_logits_per_image.t()
+        extra_loss_txt_val = loss_txt(extra_logits_per_text, ground_truth)
 
-    total_loss = (loss_img_val + loss_txt_val) / 2
+    total_loss = (loss_img_val + loss_txt_val) / 2 
     return total_loss
 
 
@@ -98,6 +164,15 @@ def get_text_features(model, token_features, args):
     text = text.view(1, -1)
     text = text.repeat(token_features.size(0), 1)
     text_features = model.encode_text_img(text, token_features)
+    return text_features
+
+def get_cap_embedded_features(model, token_features,cap, args):
+    text = tokenize(cap, truncate=True)
+    text = text.cuda(args.gpu, non_blocking=True)
+    id_split = tokenize(["*"])[0][1]  
+    #text = text.view(1, -1)
+    #text = text.repeat(token_features.size(0), 1)
+    text_features = model.encode_text_img_train(text, token_features,split_ind=id_split)
     return text_features
 
 def get_text_attention_features(model, token_features, args):
@@ -173,28 +248,43 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
     return topk_image_features, topk_text_features
 
 
-def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, args, database=None):
-    caps = tokenize(caps)
-    caps = caps.cuda(args.gpu, non_blocking=True)
+def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, capss, loss_img, loss_txt, loss_extra, args, database=None):
+    caps, subject, other = capss[0], capss[1], capss[2]
+    #caps = tokenize(caps)
+    #caps = caps.cuda(args.gpu, non_blocking=True)
     with torch.no_grad():
-        image_features = model.encode_image(images)
-        cap_feature = model.encode_text(caps)
+        image_features = images
+        ori_cap_feature = caps
+        #image_features = model.encode_image(images)
+        #cap_feature = model.encode_text(caps)
     
     topk_image_features,topk_text_features = get_retrieved_features(image_features,database,args)
     topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
     topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
     #pdb.set_trace()
-    fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_image_features,topk_image_features)
-    text_conditioned = text_condition(image_features.unsqueeze(1), topk_text_features,topk_text_features)
+
+    mapped_features = img2text(image_features)
+    topk_image_features = img2text(topk_image_features)
+    topk_text_features = img2text(topk_text_features)
+    #cap_feature = img2text(ori_cap_feature)
+
+    fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
+    text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
     #fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_text_features,topk_text_features)
     #fused_features = fused_features.squeeze(1) + text_conditioned.squeeze(1) #+ image_features + cap_feature
-    fused_features = torch.cat([fused_features,text_conditioned,image_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
-    #token_features = img2text(image_features)
-    token_features = img2text(fused_features)
 
-    text_features = get_text_features(model, token_features, args)
-    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)#,cap_feature.unsqueeze(1)],dim=1)
+    #token_features = img2text(image_features)
+    token_features = fused_features
+
+    #text_features = get_text_features(model, token_features, args)
+
+    other_embedded_features = get_cap_embedded_features(model, token_features,other, args)
+
+    #image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    #text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    other_embedded_features = other_embedded_features / other_embedded_features.norm(dim=-1, keepdim=True)
+    ori_cap_feature = ori_cap_feature / ori_cap_feature.norm(dim=-1, keepdim=True)
 
     logit_scale = model.logit_scale.exp()
     logit_scale = logit_scale.mean()
@@ -203,28 +293,47 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
         rank = dist.get_rank()
 
         # We gather tensors from all gpus to get more negatives to contrast with.
-        gathered_image_features = [
-            torch.zeros_like(image_features) for _ in range(world_size)
+        #gathered_image_features = [
+        #    torch.zeros_like(image_features) for _ in range(world_size)
+        #]
+        #gathered_text_features = [
+        #    torch.zeros_like(text_features) for _ in range(world_size)
+        #]
+        gathered_other_features = [
+            torch.zeros_like(other_embedded_features) for _ in range(world_size)
         ]
-        gathered_text_features = [
-            torch.zeros_like(text_features) for _ in range(world_size)
+        gathered_ori_cap_features = [
+            torch.zeros_like(ori_cap_feature) for _ in range(world_size)
         ]
         #gathered_whole_image_features = [
         #    torch.zeros_like(whole_image_features) for _ in range(world_size)
         #]
-        dist.all_gather(gathered_image_features, image_features)
-        dist.all_gather(gathered_text_features, text_features)
+        #dist.all_gather(gathered_image_features, image_features)
+        #dist.all_gather(gathered_text_features, text_features)
+        dist.all_gather(gathered_other_features, other_embedded_features)
+        dist.all_gather(gathered_ori_cap_features, ori_cap_feature)
         #dist.all_gather(gathered_whole_image_features, whole_image_features)
 
-        all_image_features = torch.cat(
-            [image_features]
-            + gathered_image_features[:rank]
-            + gathered_image_features[rank + 1 :]
+        #all_image_features = torch.cat(
+        #    [image_features]
+        #    + gathered_image_features[:rank]
+        #    + gathered_image_features[rank + 1 :]
+        #)
+        #all_text_features = torch.cat(
+        #    [text_features]
+        #    + gathered_text_features[:rank]
+        #    + gathered_text_features[rank + 1 :]
+        #)
+        
+        all_other_features = torch.cat(
+            [other_embedded_features]
+            + gathered_other_features[:rank]
+            + gathered_other_features[rank + 1 :]
         )
-        all_text_features = torch.cat(
-            [text_features]
-            + gathered_text_features[:rank]
-            + gathered_text_features[rank + 1 :]
+        all_ori_gap_features = torch.cat(
+            [ori_cap_feature]
+            + gathered_ori_cap_features[:rank]
+            + gathered_ori_cap_features[rank + 1 :]
         )
         """
         all_whole_image_features = torch.cat(
@@ -234,22 +343,36 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
         )
         """
         
-        ground_truth = torch.arange(len(all_image_features)).long()
-        if args.gpu is not None:
-            ground_truth = ground_truth.cuda(args.gpu, non_blocking=True)
+        #ground_truth = torch.arange(len(all_image_features)).long()
+        #if args.gpu is not None:
+        #    ground_truth = ground_truth.cuda(args.gpu, non_blocking=True)
+        
+        # cosine loss
+        #target = torch.as_tensor([1])
+        #if args.gpu is not None:
+        #    target = target.cuda(args.gpu, non_blocking=True)
+        #loss_img_val = loss_img(all_image_features, all_text_features, target)
+
 
         # this is needed to send gradients back everywhere.
         # Image loss.
-        logits_per_image = logit_scale * all_image_features @ all_text_features.t()
-        loss_img_val = loss_img(logits_per_image, ground_truth)
-        logits_per_text = logits_per_image.t()
-        loss_txt_val = loss_txt(logits_per_text, ground_truth)
+        #logits_per_image = logit_scale * all_image_features @ all_text_features.t()
+        #loss_img_val = loss_img(logits_per_image, ground_truth)
+        #logits_per_text = logits_per_image.t()
+        #loss_txt_val = loss_txt(logits_per_text, ground_truth)
+
+        # Text loss.
+        extra_target = torch.as_tensor([1])
+        if args.gpu is not None:
+            extra_target = extra_target.cuda(args.gpu, non_blocking=True)
+        extra_loss = loss_extra(all_other_features, all_ori_gap_features, extra_target)
 
         #extra loss with whole image embedding
         #logits_per_image_extra = logit_scale * all_whole_image_features @ all_text_features.t()
         #loss_img_val_extra = loss_img(logits_per_image_extra, ground_truth)
         #logits_per_text_extra = logits_per_image_extra.t()
         #loss_txt_val_extra = loss_txt(logits_per_text_extra, ground_truth)
+    
     else:
         ground_truth = torch.arange(len(image_features)).long()
         if args.gpu is not None:
@@ -259,7 +382,13 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
         loss_img_val = loss_img(logits_per_image, ground_truth)
         logits_per_text = logit_scale * text_features @ image_features.t()
         loss_txt_val = loss_txt(logits_per_text, ground_truth)
-    total_loss = (loss_img_val + loss_txt_val) / 2 #+ (loss_img_val_extra + loss_txt_val_extra) / 2
+        # Text loss.
+        extra_logits_per_image = logit_scale * ori_cap_feature @ other_embedded_features.t()
+        extra_loss_img_val = loss_img(extra_logits_per_image, ground_truth)
+        extra_logits_per_text = extra_logits_per_image.t()
+        extra_loss_txt_val = loss_txt(extra_logits_per_text, ground_truth)
+
+    total_loss = extra_loss #(loss_img_val + loss_txt_val) / 2 + 0.1 * extra_loss
     return total_loss
 
 
@@ -270,9 +399,11 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
     dataloader, sampler = data['train'].dataloader,  data['train'].sampler
     loss_img = nn.CrossEntropyLoss()
     loss_txt = nn.CrossEntropyLoss()
+    loss_extra = nn.CosineEmbeddingLoss()
     if args.gpu is not None:
         loss_img = loss_img.cuda(args.gpu)
         loss_txt = loss_txt.cuda(args.gpu)
+        loss_extra = loss_extra.cuda(args.gpu)
 
     #if args.distributed and sampler is not None:
     #    sampler.set_epoch(epoch)
@@ -292,7 +423,7 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
         #images, texts = batch['image_byte'], batch['caption'] # this is the webdataset format
         #print(images.shape)
         #print(len(batch))
-        images, caps = batch[0], batch[1] # this is the original code
+        images, caps, subject, other = batch[0], batch[1], batch[2], batch[3] # this is the original code
         #pdb.set_trace()
         if len(batch) == 3 and args.use_debiased_sampler:
             data_identifier = torch.unique(batch[2])[0].numpy()
@@ -300,7 +431,9 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
             data_identifier = -1
         if args.gpu is not None:
             images = images.cuda(args.gpu, non_blocking=True)
-
+            caps = caps.cuda(args.gpu, non_blocking=True)
+        
+        caps = (caps, subject, other)
 
         data_time = time.time() - end
 
@@ -311,13 +444,15 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
         # with automatic mixed precision.
         if args.precision == "amp" :#or args.precision == "fp16":
             with autocast():
-                total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, args, database=database)
+                #total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
+                total_loss = get_loss_img2text_image(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
                 scaler.scale(total_loss).backward()
                 scaler.step(optimizer)
             scaler.update()
 
         else:
-            total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, args, database=database)
+            #total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
+            total_loss = get_loss_img2text_image(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
             total_loss.backward()
             optimizer.step()
 
@@ -328,7 +463,7 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
         batch_time = time.time() - end
         end = time.time()
 
-        if is_master(args) and (i % 100) == 0:
+        if is_master(args) and (i % 500) == 0:
             num_samples = i * len(images) * args.world_size
             samples_per_epoch = dataloader.num_samples
             percent_complete = 100.0 * i / num_batches_per_epoch

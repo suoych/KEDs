@@ -67,6 +67,13 @@ for i in range(len(img_cap_list_good)):
 for i in range(len(img_cap_list)):
     cap_dict[img_cap_list[i]['filename']] = img_cap_list[i]['text']
 
+
+with open("cc_subject.json","r") as f:
+    subject_dict = json.load(f)
+    
+with open("cc_other.json","r") as f:
+    other_dict = json.load(f)
+
 global_preprocess_train = _transform(224, is_train=True)
 
 _SHARD_SHUFFLE_SIZE = 2000
@@ -727,6 +734,7 @@ class CustomFolder(Dataset):
             sample = self.transform(sample)
         return sample, path
     
+"""
 class CustomFolderCC(Dataset):
     def __init__(self, folder, transform):
         image_lists = os.listdir(folder)
@@ -737,43 +745,55 @@ class CustomFolderCC(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index: int):
-        """
-        Args:
-            index (int): Index
+        #Args:
+        #    index (int): Index
 
-        Returns:
-            tuple: (sample, target) where target is class_index of the target class.
-        """
+        #Returns:
+        #    tuple: (sample, target) where target is class_index of the target class.
         path = self.samples[index]
         basename = os.path.basename(path).split(".")[0]
         cap = cap_dict[basename]
+        subject = subject_dict[basename]
+        otherpart = other_dict[basename]
         #global_preprocess_train(Image.open(BytesIO(value)))
         sample = Image.open(str(path))
         if self.transform is not None:
             sample = self.transform(sample)
-        return sample, cap, basename
-    
-class CustomFolderCCFeature(Dataset):
-    """
-    A class for directly loading pre-saved CLIP features of CC3M.
-    """
-    def __init__(self, folder):
-        self.image_folder = os.path.join(folder,"image_feature_folder")
-        self.text_folder = os.path.join(folder,"text_feature_folder")
-        self.image_lists = os.listdir(self.image_folder)
+        return sample, cap, subject, otherpart, basename
+"""
+         
+class CustomFolderCC(Dataset):
+    #This is the version for loading feature.
+    def __init__(self, folder, transform):
+        self.folder = folder
+        self.image_folder = os.path.join(folder,"cc_image_feature_folder_clipl")
+        image_lists = os.listdir(self.image_folder)
+        self.text_folder = os.path.join(folder,"cc_text_feature_folder_clipl")
+        self.image_samples = [os.path.join(self.image_folder, name) for name in image_lists]
+        self.transform = transform
 
     def __len__(self):
-        return len(self.image_lists)
+        return len(self.image_samples)
 
     def __getitem__(self, index: int):
-        """
-        return feature.
-        """
-        image_path = os.path.join(self.image_folder, self.image_lists[index])
-        text_path = os.path.join(self.text_folder, self.image_lists[index])
-        image_sample = torch.load(str(image_path))
-        text_sample = torch.load(str(text_path))
-        return image_sample,text_sample
+        #Args:
+        #    index (int): Index
+        #Returns:
+        #    tuple: (sample, target) where target is class_index of the target class.
+        path = self.image_samples[index]
+        basename = os.path.basename(path).split(".")[0]
+
+        cap_path = os.path.join(self.text_folder, os.path.basename(path))
+        cap = torch.load(str(cap_path), map_location=torch.device('cpu'))
+        #cap = cap_dict[basename]
+        subject = subject_dict[basename]
+        otherpart = other_dict[basename]
+        otherpart = "a photo of * * * " + otherpart
+        #global_preprocess_train(Image.open(BytesIO(value)))
+        image_sample = torch.load(str(path), map_location=torch.device('cpu'))#Image.open(str(path))
+        #if self.transform is not None:
+        #    sample = self.transform(sample)
+        return image_sample, cap, subject, otherpart, basename
 
 class LoadDataBase(Dataset):
     """

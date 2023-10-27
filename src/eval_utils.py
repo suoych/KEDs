@@ -42,8 +42,7 @@ from data import CsvDataset, CustomFolder, ImageList, CsvCOCO, FashionIQ, CIRR, 
 import pandas as pd
 from sklearn.cluster import KMeans
 import json
-
-
+import copy
 
 
 cap_dict = {}
@@ -58,6 +57,35 @@ for i in range(len(img_cap_list_good)):
 
 for i in range(len(img_cap_list)):
     cap_dict[img_cap_list[i]['filename']] = img_cap_list[i]['text']
+
+def load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location):
+    if args.gpu is None:
+        checkpoint = torch.load(location)
+    else:
+        # Map model to be loaded to specified single gpu.
+        loc = "cuda:{}".format(args.gpu)
+        checkpoint = torch.load(location, map_location=loc)
+    sd_img2text = checkpoint["state_dict_img2text"]
+    sd_retrieval_fuse = checkpoint["state_dict_retrieval_fuse"]
+    sd_text_condition = checkpoint["state_dict_text_condition"]
+    if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+        sd = {k[len('module.'):]: v for k, v in sd.items()}
+    if not args.distributed and next(iter(sd_img2text.items()))[0].startswith('module'):
+        sd_img2text = {k[len('module.'):]: v for k, v in sd_img2text.items()}
+    if not args.distributed and next(iter(sd_retrieval_fuse.items()))[0].startswith('module'):
+        sd_retrieval_fuse = {k[len('module.'):]: v for k, v in sd_retrieval_fuse.items()}
+    if not args.distributed and next(iter(sd_text_condition.items()))[0].startswith('module'):
+        sd_text_condition = {k[len('module.'):]: v for k, v in sd_text_condition.items()}
+    #with torch.no_grad():
+    #    for a_param, b_param in zip(model.visual.parameters(), model.visual_mask.parameters()):
+    #        b_param.copy_(a_param)
+    img2text.load_state_dict(sd_img2text)
+    retrieval_fuse.load_state_dict(sd_retrieval_fuse)
+    text_condition.load_state_dict(sd_text_condition)
+    logging.info(
+        f"=> loaded checkpoint '{location}' (epoch {checkpoint['epoch']})"
+    )
+    return img2text, retrieval_fuse, text_condition
 
 def get_templates():
     """
@@ -337,94 +365,126 @@ def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, text_condition,da
             logit_scale = m.logit_scale.exp()
             logit_scale = logit_scale.mean() 
 
+        
+        for j in range(1,10):
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_{j}.pt"
+            img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
+            img2text_tb = copy.deepcopy(img2text) 
+            retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
+            text_condition_tb = copy.deepcopy(text_condition)
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_{j}.pt"
+            img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
+            ## Extract query features 
+            for p_ind, p in enumerate(prompt):            
+                ## which token has to be replaced with image features
+                id_split = tokenize(["*"])[0][1]
+                text = tokenize(p).view(1, -1)
+                text = text.cuda(args.gpu, non_blocking=True)
+                ## text only features (domain name only)
+                text_only = p.replace("*", "")
+                text_only = tokenize(text_only).view(1, -1)            
+                text_only = text_only.cuda(args.gpu, non_blocking=True)                        
+                text_only_features = m.encode_text(text_only)
+                text_only_features_normed = text_only_features / text_only_features.norm(dim=-1, keepdim=True)
 
-        ## Extract query features 
-        for p_ind, p in enumerate(prompt):            
-            ## which token has to be replaced with image features
-            id_split = tokenize(["*"])[0][1]
-            text = tokenize(p).view(1, -1)
-            text = text.cuda(args.gpu, non_blocking=True)
-            ## text only features (domain name only)
-            text_only = p.replace("*", "")
-            text_only = tokenize(text_only).view(1, -1)            
-            text_only = text_only.cuda(args.gpu, non_blocking=True)                        
-            text_only_features = m.encode_text(text_only)
-            text_only_features_normed = text_only_features / text_only_features.norm(dim=-1, keepdim=True)
+                all_query_features = []
+                all_query_image_features = []
+                all_query_mixture_features = []
+                all_gt_text_features = []
+                all_query_labels = []
+                all_text_features = []
+                for batch in tqdm(query_loader):
+                    images, labels,basename = batch
+                    if args.gpu is not None:
+                        images = images.cuda(args.gpu, non_blocking=True)
+                        labels = labels.cuda(args.gpu, non_blocking=True)
 
-            all_query_features = []
-            all_query_image_features = []
-            all_query_mixture_features = []
-            all_gt_text_features = []
-            all_query_labels = []
-            all_text_features = []
-            for batch in tqdm(query_loader):
-                images, labels,basename = batch
-                if args.gpu is not None:
-                    images = images.cuda(args.gpu, non_blocking=True)
-                    labels = labels.cuda(args.gpu, non_blocking=True)
-
-                image_features = m.encode_image(images) 
-
-
-                ## Label is decided by class label and images' domain
-                labels += n_class * p_ind
-
-                #for j in range(image_features.shape[0]):
-                #    file_name = basename[j] + '.pt'
-                #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/imgnet_image_feature_folder", file_name))
-                #    torch.save(text_only_features_normed.repeat((image_features.shape[0], 1)).clone(), os.path.join("/home/yucheng/imgnet_text_feature_folder", file_name))
-
-                ## Composed feature extraction
-                topk_image_features,topk_text_features = get_retrieved_features(image_features,database,args)
-                topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
-                topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
-                fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_image_features,topk_image_features)
-                text_conditioned = text_condition(image_features.unsqueeze(1), topk_text_features,topk_text_features)
-                fused_features = torch.cat([fused_features,text_conditioned,image_features.unsqueeze(1),text_only_features.unsqueeze(1)],dim=1)
-                #token_features = img2text(image_features)
+                    image_features = m.encode_image(images) 
 
 
-                image_features_query = img2text(fused_features)                      
-                composed_feature = m.encode_text_img_retrieval(text, image_features_query, split_ind=id_split)                            
-                composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+                    ## Label is decided by class label and images' domain
+                    labels += n_class * p_ind
+
+                    #for j in range(image_features.shape[0]):
+                    #    file_name = basename[j] + '.pt'
+                    #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/imgnet_image_feature_folder", file_name))
+                    #    torch.save(text_only_features_normed.repeat((image_features.shape[0], 1)).clone(), os.path.join("/home/yucheng/imgnet_text_feature_folder", file_name))
+
+                    ## Composed feature extraction
+                    topk_image,topk_text = get_retrieved_features(image_features,database,args)
+                    topk_image = topk_image.cuda(args.gpu, non_blocking=True)
+                    topk_text = topk_text.cuda(args.gpu, non_blocking=True)
+
+                    mapped_features = img2text(image_features)
+                    topk_image_features = img2text(topk_image)
+                    topk_text_features = img2text(topk_text)
+                    #cap_feature = img2text(caption_features)
+                    fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
+                    text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
+
+                    #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
+                    fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
+
+                    #fused_features = retrieval_fuse(image_features.unsqueeze(1), topk_image_features,topk_image_features)
+                    #text_conditioned = text_condition(image_features.unsqueeze(1), topk_text_features,topk_text_features)
+                    #fused_features = torch.cat([fused_features,text_conditioned,image_features.unsqueeze(1),text_only_features.unsqueeze(1)],dim=1)
+                    #token_features = img2text(image_features)
 
 
+                    #image_features_query = img2text(fused_features)        
+                    image_features_query = fused_features                 
+                    composed_feature = m.encode_text_img_retrieval(text, image_features_query, split_ind=id_split) 
 
-                ## Image feature only
-                image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
-                ## average of image and text features
-                mixture_features = image_features + text_only_features_normed
-                mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)       
+                    #text branch
+                    mapped_features_tb = img2text_tb(image_features)
+                    topk_image_features_tb = img2text_tb(topk_image)
+                    topk_text_features_tb = img2text_tb(topk_text)
+                    #fused_features_tb = retrieval_fuse_tb(query_image_features.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+                    #text_conditioned_tb = text_condition_tb(query_image_features.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                    fused_features_tb = retrieval_fuse_tb(mapped_features_tb.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+                    text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                    fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
+                    query_image_tokens_tb = fused_features_tb                    
+                    composed_feature_tb = m.encode_text_img_retrieval(text, query_image_tokens_tb, split_ind=id_split) 
+                    image_features = composed_feature_tb
 
-                all_text_features.append(text_only_features_normed.repeat((image_features.shape[0], 1)))
-                all_query_features.append(composed_feature)
-                all_query_image_features.append(image_features)
-                all_query_mixture_features.append(mixture_features)
 
-                #all_gt_text_features.append(gt_text_features_normed)
-                
-                all_query_labels.append(labels)
-                #pdb.set_trace()
+                    composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
+                    ## average of image and text features
+                    #mixture_features = image_features + text_only_features_normed
+                    mixture_features = 0.1* j * image_features + (1- 0.1 * j) * composed_feature 
+                    mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)       
 
-            metric_func = partial(get_metrics_imgnet, 
-                image_features=torch.cat(all_image_features), 
-                query_labels=torch.cat(all_query_labels),
-                target_labels=torch.cat(all_target_labels),
-                )
+                    all_text_features.append(text_only_features_normed.repeat((image_features.shape[0], 1)))
+                    all_query_features.append(composed_feature)
+                    all_query_image_features.append(image_features)
+                    all_query_mixture_features.append(mixture_features)
 
-            feats = {'composed': torch.cat(all_query_features), 
-                    'image': torch.cat(all_query_image_features),
-                    'text': torch.cat(all_text_features),
-                    'mixture': torch.cat(all_query_mixture_features),
-                    #'gt_text': torch.cat(all_gt_text_features),
-                    }        
+                    #all_gt_text_features.append(gt_text_features_normed)
+                    
+                    all_query_labels.append(labels)
+                    #pdb.set_trace()
 
-            for key, value in feats.items():
-                metrics = metric_func(query_features=value)
-                logging.info("Current prompt:"+ str(p) +"Eval {key} Feature")
-                logging.info(
-                f"Eval {key} Feature"
-                + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
+                metric_func = partial(get_metrics_imgnet, 
+                    image_features=torch.cat(all_image_features), 
+                    query_labels=torch.cat(all_query_labels),
+                    target_labels=torch.cat(all_target_labels),
+                    )
+
+                feats = {'composed': torch.cat(all_query_features), 
+                        'image': torch.cat(all_query_image_features),
+                        #'text': torch.cat(all_text_features),
+                        'mixture': torch.cat(all_query_mixture_features),
+                        #'gt_text': torch.cat(all_gt_text_features),
+                        }        
+
+                for key, value in feats.items():
+                    metrics = metric_func(query_features=value)
+                    logging.info("Current prompt:"+ str(p) +"Eval {key} Feature")
+                    logging.info(
+                    f"Eval {key} Feature"
+                    + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
 
     return metrics
 
@@ -446,74 +506,103 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
     logit_scale = m.logit_scale.exp()
     logit_scale = logit_scale.mean()
     with torch.no_grad():
-        for batch in tqdm(loader):
-            images, region_images, text_full, text_with_blank, text_with_blank_query, filename, raw_text, basename = batch            
-            if args.gpu is not None:
-                images = images.cuda(args.gpu, non_blocking=True)
-                region_images = region_images.cuda(args.gpu, non_blocking=True)
-                text_full = text_full.cuda(args.gpu, non_blocking=True)
-                text_with_blank = text_with_blank.cuda(args.gpu, non_blocking=True)
-                text_with_blank_query = text_with_blank_query.cuda(args.gpu, non_blocking=True)
-            ## Target image features 
-            image_features = m.encode_image(images)             
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
-            id_split = tokenize(["*"])[0][1]
-            pdb.set_trace()
-            query_image_features = m.encode_image(region_images)
-            #query_image_tokens = img2text(query_image_features)          
-            #composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                        
-            #composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)    
+        for j in range(1,10):
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_{j}.pt"
+            img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
+            img2text_tb = copy.deepcopy(img2text) 
+            retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
+            text_condition_tb = copy.deepcopy(text_condition)
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_{j}.pt"
+            img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
+            ## Extract query features 
+            for batch in tqdm(loader):
+                images, region_images, text_full, text_with_blank, text_with_blank_query, filename, raw_text, basename = batch            
+                if args.gpu is not None:
+                    images = images.cuda(args.gpu, non_blocking=True)
+                    region_images = region_images.cuda(args.gpu, non_blocking=True)
+                    text_full = text_full.cuda(args.gpu, non_blocking=True)
+                    text_with_blank = text_with_blank.cuda(args.gpu, non_blocking=True)
+                    text_with_blank_query = text_with_blank_query.cuda(args.gpu, non_blocking=True)
+                ## Target image features 
+                image_features = m.encode_image(images)             
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
+                id_split = tokenize(["*"])[0][1]
+                #pdb.set_trace()
+                query_image_features = m.encode_image(region_images)
+                #query_image_tokens = img2text(query_image_features)          
+                #composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                        
+                #composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)    
 
-            
-                    
-            ## Composed feature extraction
-            topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
-            topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
-            topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
-            fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            fused_features = query_image_features #fused_features.squeeze(1) + query_image_features
-            query_image_tokens  = img2text(fused_features)                      
-            composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                            
-            composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)
+                
+                        
+                ## Composed feature extraction
+                topk_image,topk_text = get_retrieved_features(query_image_features,database,args)
+                topk_image = topk_image.cuda(args.gpu, non_blocking=True)
+                topk_text = topk_text.cuda(args.gpu, non_blocking=True)
+                
+                mapped_features = img2text(query_image_features)
+                topk_image_features = img2text(topk_image)
+                topk_text_features = img2text(topk_text)
+                fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
+                text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
+                fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
 
-
-
-            ## Text only features
-            text_full_features = m.encode_text(text_full)
-            text_full_features = text_full_features / text_full_features.norm(dim=-1, keepdim=True)            
-            ## Query only features
-            query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)                               
-            ## Mixed featurs
-            mixture_features = query_image_features + text_full_features
-            mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)            
-
-
-            #for j in range(image_features.shape[0]):
-            #    file_name = basename[j] + '.pt'
-            #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/coco_image_feature_folder", file_name))
-            #    torch.save(text_full_features.clone(), os.path.join("/home/yucheng/coco_text_feature_folder", file_name))
+                query_image_tokens  = fused_features                      
+                composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                            
+                
 
 
-            all_image_features.append(image_features.cpu())
-            all_text_full_features.append(text_full_features.cpu())       
-            all_query_image_features.append(query_image_features.cpu())
-            all_mixture_features.append(mixture_features.cpu())                        
-            all_composed_features_with_class.append(composed_feature_with_class.cpu())            
+                #text branch
+                mapped_features_tb = img2text_tb(query_image_features)
+                topk_image_features_tb = img2text_tb(topk_image)
+                topk_text_features_tb = img2text_tb(topk_text)
+                #fused_features_tb = retrieval_fuse_tb(query_image_features.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+                #text_conditioned_tb = text_condition_tb(query_image_features.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                fused_features_tb = retrieval_fuse_tb(mapped_features_tb.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+                text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
+                query_image_tokens_tb = fused_features_tb                    
+                composed_feature_tb = m.encode_text_img_retrieval(text_with_blank, query_image_tokens_tb, split_ind=id_split, repeat=False) 
+                
+                query_image_features = composed_feature_tb
+                composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)
+                ## Text only features
+                text_full_features = m.encode_text(text_full)
+                text_full_features = text_full_features / text_full_features.norm(dim=-1, keepdim=True)            
+                ## Query only features
+                query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)                               
+                ## Mixed features
+                #mixture_features = query_image_features + text_full_features
+                mixture_features = 0.1* j * query_image_features + (1- 0.1 * j) * composed_feature_with_class
+                mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)            
 
-        metric_func = partial(get_metrics_coco, 
-                image_features=torch.cat(all_image_features), 
-                logit_scale=logit_scale
-                )
-        feats = {'composed': torch.cat(all_composed_features_with_class), 
-                 'image': torch.cat(all_query_image_features),
-                 'text': torch.cat(all_text_full_features),
-                 'mixture': torch.cat(all_mixture_features)}        
 
-        for key, value in feats.items():
-            metrics = metric_func(ref_features=value)
-            logging.info(
-            f"Eval {key} Feature"
-            + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
+                #for j in range(image_features.shape[0]):
+                #    file_name = basename[j] + '.pt'
+                #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/coco_image_feature_folder", file_name))
+                #    torch.save(text_full_features.clone(), os.path.join("/home/yucheng/coco_text_feature_folder", file_name))
+
+
+                all_image_features.append(image_features.cpu())
+                all_text_full_features.append(text_full_features.cpu())       
+                all_query_image_features.append(query_image_features.cpu())
+                all_mixture_features.append(mixture_features.cpu())                        
+                all_composed_features_with_class.append(composed_feature_with_class.cpu())            
+
+            metric_func = partial(get_metrics_coco, 
+                    image_features=torch.cat(all_image_features), 
+                    logit_scale=logit_scale
+                    )
+            feats = {'composed': torch.cat(all_composed_features_with_class), 
+                    'image': torch.cat(all_query_image_features),
+                    #'text': torch.cat(all_text_full_features),
+                    'mixture': torch.cat(all_mixture_features)}        
+
+            for key, value in feats.items():
+                metrics = metric_func(ref_features=value)
+                logging.info(
+                f"Eval {key} Feature"
+                + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
 
     return metrics
 
@@ -541,7 +630,7 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
     logit_scale = logit_scale.mean()  
 
     all_prompt_dict = {}
-    with open("/home/yucheng/overall_captions/cirr/answer_dict.json","r") as f: 
+    with open("/home/yucheng/overall_captions/cirr/answer_dict_chat.json","r") as f: 
         all_answer_dict = json.load(f)
 
     #dictionary_embeddings, concept_texts = get_dict_embedding(m,args)
@@ -556,124 +645,182 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
             all_image_features.append(image_features)
             for path in target_paths:
                 all_target_paths.append(path)
+            all_target_global = all_target_paths
 
-        all_modi_dict = {}
-        for batch in tqdm(query_loader):
-            ref_images, text_with_blank, caption_only, ref_paths, answer_paths, raw_captions, target_cap = batch
-            if args.gpu is not None:
-                ref_images = ref_images.cuda(args.gpu, non_blocking=True)
-                text_with_blank = text_with_blank.cuda(args.gpu, non_blocking=True)
-                caption_only = caption_only.cuda(args.gpu, non_blocking=True)
-            id_split = tokenize(["*"])[0][1]                        
-            for path in ref_paths:
-                all_ref_paths.append(path)
-            for path in answer_paths:
-                all_answer_paths.append(path)
-            for cap in raw_captions:
-                all_raw_captions.append(cap)
-            
+        for j in range(1,10):
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_5.pt"
+            img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
+            img2text_tb = copy.deepcopy(img2text) 
+            retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
+            text_condition_tb = copy.deepcopy(text_condition)
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_6.pt"
+            img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
             #pdb.set_trace()
-            all_llm_cap = []
-            for ref_path in ref_paths:
-                image_basename = ref_path.split(".")[0]
-                all_llm_cap.append(all_answer_dict[image_basename])
-            all_llm_cap = tokenize(all_llm_cap)
-            all_llm_cap = all_llm_cap.cuda(args.gpu, non_blocking=True)
-            all_llm_cap = m.encode_text(all_llm_cap)
-            
+            all_query_image_features = []  
+            all_composed_features = []  
+            all_mixture_features = []  
+            all_caption_features = [] 
+            all_gt_text_features = [] 
+            all_target_paths = all_target_global
+            all_ref_paths = []
+            all_answer_paths = []
+            all_raw_captions = []
+            all_modi_dict = {}
+            for batch in tqdm(query_loader):
+                ref_images, text_with_blank, caption_only, ref_paths, answer_paths, raw_captions, target_cap = batch
+                if args.gpu is not None:
+                    ref_images = ref_images.cuda(args.gpu, non_blocking=True)
+                    text_with_blank = text_with_blank.cuda(args.gpu, non_blocking=True)
+                    caption_only = caption_only.cuda(args.gpu, non_blocking=True)
+                id_split = tokenize(["*"])[0][1]                        
+                for path in ref_paths:
+                    all_ref_paths.append(path)
+                for path in answer_paths:
+                    all_answer_paths.append(path)
+                for cap in raw_captions:
+                    all_raw_captions.append(cap)
+                
+                #pdb.set_trace()
+                all_llm_cap = []
+                for i, ref_path in enumerate(ref_paths):
+                    image_basename = ref_path.split(".")[0]
+                    #print("Raw caption:", raw_captions[i])
+                    #print("LLM caption:", all_answer_dict[image_basename].split("\n")[-1])
+                    if "apologize" in all_answer_dict[image_basename] or "generate" in all_answer_dict[image_basename]:
+                        all_llm_cap.append(raw_captions[i])
+                        continue
+                    #if "I hope" in all_answer_dict[image_basename].split("\n")[-1]:
+                    #    all_llm_cap.append(all_answer_dict[image_basename].split("caption##")[-2])
+                    #else:
+                    all_llm_cap.append(all_answer_dict[image_basename].split("caption##")[-1])
+                    #all_llm_cap.append(raw_captions[i])
+                all_llm_cap = tokenize(all_llm_cap)
+                all_llm_cap = all_llm_cap.cuda(args.gpu, non_blocking=True)
+                all_llm_cap = m.encode_text(all_llm_cap)
+                
 
-            caption_features = m.encode_text(caption_only)
-            ## Composed features
-            query_image_features = m.encode_image(ref_images)
- 
-            ## Composed feature extraction
-            topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
-            topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
-            topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+                caption_features = m.encode_text(caption_only)
+                ## Composed features
+                query_image_features = m.encode_image(ref_images)
 
-            fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
-            fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),caption_features.unsqueeze(1)],dim=1)
+                ## Composed feature extraction
+                topk_image,topk_text = get_retrieved_features(query_image_features,database,args)
+                topk_image = topk_image.cuda(args.gpu, non_blocking=True)
+                topk_text = topk_text.cuda(args.gpu, non_blocking=True)
+                
+                mapped_features = img2text(query_image_features)
+                topk_image_features = img2text(topk_image)
+                topk_text_features = img2text(topk_text)
+                #cap_feature = img2text(caption_features)
+                #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
+                #text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
+                fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
+                text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
 
-            query_image_tokens  = img2text(fused_features)                      
-            composed_feature = m.encode_text_img_retrieval(text_with_blank, query_image_tokens, split_ind=id_split, repeat=False)                            
-            composed_feature = composed_feature #+ 0.05 * all_llm_cap #+ 0.03 * caption_features
+                #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
+                fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
+                #fused_features = mapped_features.unsqueeze(1)
 
-            #composed_feature = all_llm_cap
-                        
+                #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
+                #text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
+                #fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),caption_features.unsqueeze(1)],dim=1)
 
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
-            caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
-            query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
-            composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)            
-            mixture_features = 0.05 * query_image_features + 0.95 * caption_features            
-            mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
-            all_caption_features.append(caption_features)
-            all_query_image_features.append(query_image_features)
-            all_composed_features.append(composed_feature)            
-            all_mixture_features.append(mixture_features) 
-            #all_gt_text_features.append(gt_text_features_normed)
-            #pdb.set_trace()    
+                #fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),caption_features.unsqueeze(1)],dim=1)
 
-            """
+                query_image_tokens = fused_features 
+                #query_image_tokens  = img2text(fused_features)                      
+                composed_feature = m.encode_text_img_retrieval(text_with_blank, query_image_tokens, split_ind=id_split, repeat=False)     
+                
+                #text branch
+                mapped_features_tb = img2text_tb(query_image_features)
+                topk_image_features_tb = img2text_tb(topk_image)
+                topk_text_features_tb = img2text_tb(topk_text)
+                #fused_features_tb = retrieval_fuse_tb(query_image_features.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+                #text_conditioned_tb = text_condition_tb(query_image_features.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                fused_features_tb = retrieval_fuse_tb(mapped_features_tb.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+                text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
+                query_image_tokens_tb = fused_features_tb                    
+                composed_feature_tb = m.encode_text_img_retrieval(text_with_blank, query_image_tokens_tb, split_ind=id_split, repeat=False) 
+
+
+
+                query_image_features = composed_feature_tb
+                #caption_features = 0.05 * i * composed_feature + (1- 0.05 * i)* composed_feature_tb
+                #composed_feature = all_llm_cap
+                            
+
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
+                caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
+                query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
+                composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)      
+                mixture_features = 0.1* j * query_image_features + (1- 0.1 * j) * composed_feature            
+                mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
+                all_caption_features.append(caption_features)
+                all_query_image_features.append(query_image_features)
+                all_composed_features.append(composed_feature)            
+                all_mixture_features.append(mixture_features) 
+                #all_gt_text_features.append(gt_text_features_normed)
+                #pdb.set_trace()    
+
+                """
+                #pdb.set_trace()
+                # save overall caption
+                topk_caption_basenames = retrieved_captions(query_image_features,database,args)
+                all_prompt = []
+                for i, ref_path in enumerate(ref_paths):
+                    image_basename = ref_path.split(".")[0]
+                    names = topk_caption_basenames[i]
+                    captions_for_image = ""
+                    for name in names:
+                        cc_base = name.split(".")[0]
+                        captions_for_image += cap_dict[cc_base]
+                    all_prompt.append("Here are four captions for an image: "+captions_for_image+". A short caption for the image is:")
+                    all_prompt_dict[image_basename] = "Here are four captions for an image: "+captions_for_image+". A short caption for the image is:"
+                """
+
+                #for i, ref_path in enumerate(ref_paths):
+                #    image_basename = ref_path.split(".")[0]
+                #    modi_cap = target_cap[i]
+                #    all_modi_dict[image_basename] = modi_cap
+            #with open("/home/yucheng/overall_captions/cirr/prompt_dict.json","w") as f:
+            #    json.dump(all_prompt_dict,f)
+            #with open("/home/yucheng/overall_captions/cirr/modi_dict.json","w") as f:
+            #    json.dump(all_modi_dict,f)
             #pdb.set_trace()
-            # save overall caption
-            topk_caption_basenames = retrieved_captions(query_image_features,database,args)
-            all_prompt = []
-            for i, ref_path in enumerate(ref_paths):
-                image_basename = ref_path.split(".")[0]
-                names = topk_caption_basenames[i]
-                captions_for_image = ""
-                for name in names:
-                    cc_base = name.split(".")[0]
-                    captions_for_image += cap_dict[cc_base]
-                all_prompt.append("Here are four captions for an image: "+captions_for_image+". A short caption for the image is:")
-                all_prompt_dict[image_basename] = "Here are four captions for an image: "+captions_for_image+". A short caption for the image is:"
-            """
+                
 
-            #for i, ref_path in enumerate(ref_paths):
-            #    image_basename = ref_path.split(".")[0]
-            #    modi_cap = target_cap[i]
-            #    all_modi_dict[image_basename] = modi_cap
-        #with open("/home/yucheng/overall_captions/cirr/prompt_dict.json","w") as f:
-        #    json.dump(all_prompt_dict,f)
-        #with open("/home/yucheng/overall_captions/cirr/modi_dict.json","w") as f:
-        #    json.dump(all_modi_dict,f)
-        #pdb.set_trace()
+
+
+            #pdb.set_trace()            
+                #for j in range(image_features.shape[0]):
+                #    basename = os.path.basename(ref_paths[j]).split(".")[0]
+                #    file_name = basename + '.pt'
+                #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/cirr_image_feature_folder", file_name))
+                #    torch.save(caption_features.clone(), os.path.join("/home/yucheng/cirr_text_feature_folder", file_name))              
+
+            all_target_paths = np.array(all_target_paths)
+            all_ref_paths = np.array(all_ref_paths)
+            all_answer_paths = np.array(all_answer_paths)
             
+            metric_func = partial(get_metrics_cirr, 
+                    image_features=torch.cat(all_image_features), 
+                    reference_names=all_ref_paths, 
+                    index_names=all_target_paths, 
+                    target_names=all_answer_paths)
 
-
-
-        #pdb.set_trace()            
-            #for j in range(image_features.shape[0]):
-            #    basename = os.path.basename(ref_paths[j]).split(".")[0]
-            #    file_name = basename + '.pt'
-            #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/cirr_image_feature_folder", file_name))
-            #    torch.save(caption_features.clone(), os.path.join("/home/yucheng/cirr_text_feature_folder", file_name))              
-
-        all_target_paths = np.array(all_target_paths)
-        all_ref_paths = np.array(all_ref_paths)
-        all_answer_paths = np.array(all_answer_paths)
-        
-        
-        metric_func = partial(get_metrics_cirr, 
-                image_features=torch.cat(all_image_features), 
-                reference_names=all_ref_paths, 
-                index_names=all_target_paths, 
-                target_names=all_answer_paths)
-
-        feats = {'composed': torch.cat(all_composed_features), 
-                 'image': torch.cat(all_query_image_features),
-                 'text': torch.cat(all_caption_features),
-                 'mixture': torch.cat(all_mixture_features),
-                 #'gt_text': torch.cat(all_gt_text_features)
-                 }
-        
-        for key, value in feats.items():
-            metrics = metric_func(ref_features=value)
-            logging.info(
-            f"Eval {key} Feature"
-            + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
+            feats = {#'composed': torch.cat(all_composed_features), 
+                    #'image': torch.cat(all_query_image_features),
+                    #'text': torch.cat(all_caption_features),
+                    'mixture': torch.cat(all_mixture_features),
+                    #'gt_text': torch.cat(all_gt_text_features)
+                    }
+            
+            for key, value in feats.items():
+                metrics = metric_func(ref_features=value)
+                logging.info(
+                f"Eval {key} Feature"
+                + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
     return metrics
 
 
@@ -805,71 +952,118 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
             all_image_features.append(image_features)
             for path in target_paths:
                 all_target_paths.append(path)
+    
+    all_target_global = all_target_paths
+    all_image_features_global = all_image_features
 
-    with torch.no_grad():
-        for batch in tqdm(source_loader):
-            ref_images, target_images, target_caption, caption_only, answer_paths, ref_names, captions = batch
-            for path in answer_paths:
-                all_answer_paths.append(path)
-            all_reference_names.extend(ref_names)
-            all_captions.extend(captions)
-            if args.gpu is not None:
-                ref_images = ref_images.cuda(args.gpu, non_blocking=True)
-                target_images = target_images.cuda(args.gpu, non_blocking=True)
-                target_caption = target_caption.cuda(args.gpu, non_blocking=True)
-                caption_only = caption_only.cuda(args.gpu, non_blocking=True)
-            image_features = m.encode_image(target_images)
-            query_image_features = m.encode_image(ref_images)
-            id_split = tokenize(["*"])[0][1]    
-            caption_features = m.encode_text(target_caption)    
-            
-            
-            ## Composed feature extraction
-            topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
-            topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
-            topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
-            fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-            fused_features = fused_features.squeeze(1) + query_image_features + caption_features
-            query_image_tokens  = img2text(fused_features)                      
-            composed_feature = m.encode_text_img_retrieval(target_caption, query_image_tokens, split_ind=id_split, repeat=False)                            
-            #composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
-            
-
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
-            caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
-            query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
-            mixture_features = 0.025*query_image_features + 0.975*caption_features
-            mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
-            composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
-
-            all_caption_features.append(caption_features)
-            all_query_image_features.append(query_image_features)
-            all_composed_features.append(composed_feature)            
-            all_mixture_features.append(mixture_features)     
-            #all_gt_text_features.append(gt_text_features_normed)  
-
-            #for j in range(image_features.shape[0]):
-            #    basename = os.path.basename(ref_names[j]).split(".")[0]
-            #    file_name = basename + '.pt'
-            #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/fashion_image_feature_folder", file_name))
-            #    torch.save(caption_features[j].clone(), os.path.join("/home/yucheng/fashion_text_feature_folder", file_name))                  
-
-        metric_func = partial(get_metrics_fashion, 
-                              image_features=torch.cat(all_image_features),
-                              target_names=all_target_paths, answer_names=all_answer_paths)
-        feats = {'composed': torch.cat(all_composed_features), 
-                 #'image': torch.cat(all_query_image_features),
-                 #'text': torch.cat(all_caption_features),
-                 #'mixture': torch.cat(all_mixture_features),
-                 #'gt_text': torch.cat(all_gt_text_features)
-                 }
+    for j in range(1,10):
+        location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_8.pt"
+        img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
+        img2text_tb = copy.deepcopy(img2text) 
+        retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
+        text_condition_tb = copy.deepcopy(text_condition)
+        text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_14.pt"
+        img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
         #pdb.set_trace()
-        
-        for key, value in feats.items():
-            metrics = metric_func(ref_features=value)
-            logging.info(
-            f"Eval {key} Feature"
-            + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
+        all_query_image_features = []  
+        all_composed_features = []  
+        all_mixture_features = []  
+        all_caption_features = [] 
+        all_gt_text_features = [] 
+        all_target_paths = all_target_global
+        all_image_features = all_image_features_global 
+        all_answer_paths = []
+        all_captions = []
+        all_modi_dict = {}
+        with torch.no_grad():
+            for batch in tqdm(source_loader):
+                ref_images, target_images, target_caption, caption_only, answer_paths, ref_names, captions = batch
+                for path in answer_paths:
+                    all_answer_paths.append(path)
+                all_reference_names.extend(ref_names)
+                all_captions.extend(captions)
+                if args.gpu is not None:
+                    ref_images = ref_images.cuda(args.gpu, non_blocking=True)
+                    target_images = target_images.cuda(args.gpu, non_blocking=True)
+                    target_caption = target_caption.cuda(args.gpu, non_blocking=True)
+                    caption_only = caption_only.cuda(args.gpu, non_blocking=True)
+                image_features = m.encode_image(target_images)
+                query_image_features = m.encode_image(ref_images)
+                id_split = tokenize(["*"])[0][1]    
+                caption_features = m.encode_text(target_caption)    
+                
+                
+                ## Composed feature extraction
+                topk_image,topk_text = get_retrieved_features(query_image_features,database,args)
+                topk_image = topk_image.cuda(args.gpu, non_blocking=True)
+                topk_text = topk_text.cuda(args.gpu, non_blocking=True)
+
+                mapped_features = img2text(query_image_features)
+                topk_image_features = img2text(topk_image)
+                topk_text_features = img2text(topk_text)
+                #cap_feature = img2text(caption_features)
+
+                fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
+                text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
+                #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
+                fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
+                query_image_tokens = fused_features
+
+                #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
+                #fused_features = fused_features.squeeze(1) + query_image_features + caption_features
+                #query_image_tokens  = img2text(fused_features)                      
+                composed_feature = m.encode_text_img_retrieval(target_caption, query_image_tokens, split_ind=id_split, repeat=False)                            
+                #composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+                
+
+                #text branch
+                mapped_features_tb = img2text_tb(query_image_features)
+                topk_image_features_tb = img2text_tb(topk_image)
+                topk_text_features_tb = img2text_tb(topk_text)
+                fused_features_tb = retrieval_fuse_tb(mapped_features_tb.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+                text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
+                query_image_tokens_tb = fused_features_tb                    
+                composed_feature_tb = m.encode_text_img_retrieval(target_caption, query_image_tokens_tb, split_ind=id_split, repeat=False) 
+                
+                query_image_features = composed_feature_tb
+
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
+                caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
+                query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
+                mixture_features = 0.1* j * query_image_features + (1- 0.1 * j) * composed_feature   
+                #mixture_features = 0.025*query_image_features + 0.975*caption_features
+                mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
+                composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+
+                all_caption_features.append(caption_features)
+                all_query_image_features.append(query_image_features)
+                all_composed_features.append(composed_feature)            
+                all_mixture_features.append(mixture_features)     
+                #all_gt_text_features.append(gt_text_features_normed)  
+
+                #for j in range(image_features.shape[0]):
+                #    basename = os.path.basename(ref_names[j]).split(".")[0]
+                #    file_name = basename + '.pt'
+                #    torch.save(image_features[j].clone(), os.path.join("/home/yucheng/fashion_image_feature_folder", file_name))
+                #    torch.save(caption_features[j].clone(), os.path.join("/home/yucheng/fashion_text_feature_folder", file_name))                  
+
+            metric_func = partial(get_metrics_fashion, 
+                                image_features=torch.cat(all_image_features),
+                                target_names=all_target_paths, answer_names=all_answer_paths)
+            feats = {'composed': torch.cat(all_composed_features), 
+                    'image': torch.cat(all_query_image_features),
+                    #'text': torch.cat(all_caption_features),
+                    'mixture': torch.cat(all_mixture_features),
+                    #'gt_text': torch.cat(all_gt_text_features)
+                    }
+            #pdb.set_trace()
+            
+            for key, value in feats.items():
+                metrics = metric_func(ref_features=value)
+                logging.info(
+                f"Eval {key} Feature"
+                + "\t".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
     return metrics
 
 
@@ -892,7 +1086,7 @@ def get_metrics_coco(image_features, ref_features, logit_scale):
 
 def get_metrics_fashion(image_features, ref_features, target_names, answer_names):
     metrics = {}
-    pdb.set_trace()
+    #pdb.set_trace()
     distances = 1 - ref_features @ image_features.T    
     sorted_indices = torch.argsort(distances, dim=-1).cpu()
     sorted_index_names = np.array(target_names)[sorted_indices]
@@ -1009,10 +1203,21 @@ def circo_generate_val_predictions(model, img2text, retrieval_fuse, text_conditi
     # Create the data loader
     relative_val_loader = DataLoader(dataset=relative_val_dataset, batch_size=128, num_workers=0,
                                      pin_memory=False, collate_fn=collate_fn, shuffle=False)
+    img2text,img2text_tb = img2text[0], img2text[1] 
+    retrieval_fuse, retrieval_fuse_tb = retrieval_fuse[0], retrieval_fuse[1]
+    text_condition, text_condition_tb = text_condition[0], text_condition[1]
+    img2text.eval()
+    img2text_tb.eval()
+    retrieval_fuse.eval() 
+    retrieval_fuse_tb.eval()
+    text_condition.eval()
+    text_condition_tb.eval()
 
     predicted_features_list = []
     target_names_list = []
     gts_img_ids_list = []
+    image_features_list = []
+    text_features_list = []
 
     #dictionary_embeddings, concept_texts = get_dict_embedding(model,args)
 
@@ -1043,18 +1248,39 @@ def circo_generate_val_predictions(model, img2text, retrieval_fuse, text_conditi
         
         
         # calculate the composed feature
-        topk_image_features,topk_text_features = get_retrieved_features(query_image_features,database,args)
-        topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
-        topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
+
+        topk_image,topk_text = get_retrieved_features(query_image_features,database,args)
+        topk_image = topk_image.cuda(args.gpu, non_blocking=True)
+        topk_text = topk_text.cuda(args.gpu, non_blocking=True)
         #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
         #fused_features =  fused_features.squeeze(1) + query_image_features + text_feature
 
-        fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
-        text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
-        fused_features = torch.cat([fused_features,text_conditioned,query_image_features.unsqueeze(1),text_feature.unsqueeze(1)],dim=1)
-   
-        query_image_tokens  = img2text(fused_features)                      
-        composed_feature = model.encode_text_img_retrieval(text, query_image_tokens, split_ind=id_split, repeat=False)                            
+        mapped_features = img2text(query_image_features)
+        topk_image_features = img2text(topk_image)
+        topk_text_features = img2text(topk_text)
+        #cap_feature = img2text(caption_features)
+
+        fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
+        text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
+        #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
+        fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
+        query_image_tokens = fused_features
+                    
+        composed_feature = model.encode_text_img_retrieval(text, query_image_tokens, split_ind=id_split, repeat=False)   
+
+        #text branch
+        mapped_features_tb = img2text_tb(query_image_features)
+        topk_image_features_tb = img2text_tb(topk_image)
+        topk_text_features_tb = img2text_tb(topk_text)
+        #fused_features_tb = retrieval_fuse_tb(query_image_features.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+        #text_conditioned_tb = text_condition_tb(query_image_features.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+        fused_features_tb = retrieval_fuse_tb(mapped_features_tb.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
+        text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+        fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
+        query_image_tokens_tb = fused_features_tb                    
+        composed_feature_tb = model.encode_text_img_retrieval(text, query_image_tokens_tb, split_ind=id_split, repeat=False) 
+
+
         composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
         
 
@@ -1072,80 +1298,87 @@ def circo_generate_val_predictions(model, img2text, retrieval_fuse, text_conditi
         """
 
         
-        predicted_features_list.append(composed_feature)
+        predicted_features_list.append(0.5 * composed_feature + 0.5 * composed_feature_tb)
+        image_features_list.append(composed_feature)
+        text_features_list.append(composed_feature_tb)
         #predicted_features_list.append(gt_text_features_normed)
         target_names_list.extend(target_names)
         gts_img_ids_list.extend(gt_img_ids)
 
 
     predicted_features = torch.vstack(predicted_features_list)
+    image_features = torch.vstack(image_features_list)
+    text_features = torch.vstack(text_features_list)
 
-    return predicted_features, target_names_list, gts_img_ids_list
+    return predicted_features, target_names_list, gts_img_ids_list, image_features, text_features
 
 @torch.no_grad()
 def circo_compute_val_metrics(relative_val_dataset, clip_model, img2text, retrieval_fuse, text_condition, database, index_features,
                               index_names,args) -> Dict[str, float]:
     #Compute the retrieval metrics on the CIRCO validation set given the dataset, pseudo tokens and the reference names
     # Generate the predicted features
-    predicted_features, target_names, gts_img_ids = circo_generate_val_predictions(clip_model, img2text, retrieval_fuse, text_condition, database, relative_val_dataset,args)
-    ap_at5 = []
-    ap_at10 = []
-    ap_at25 = []
-    ap_at50 = []
+    predicted_features, target_names, gts_img_ids, image_features, text_features = circo_generate_val_predictions(clip_model, img2text, retrieval_fuse, text_condition, database, relative_val_dataset,args)
+    result_dict = {}
+    for name, features in zip(["mix","image","text"],[predicted_features, image_features, text_features]):
+        ap_at5 = []
+        ap_at10 = []
+        ap_at25 = []
+        ap_at50 = []
 
-    recall_at5 = []
-    recall_at10 = []
-    recall_at25 = []
-    recall_at50 = []
+        recall_at5 = []
+        recall_at10 = []
+        recall_at25 = []
+        recall_at50 = []
 
-    # Move the features to the device
-    index_features = index_features.cuda(args.gpu, non_blocking=True)
-    predicted_features = predicted_features.cuda(args.gpu, non_blocking=True)
+        # Move the features to the device
+        index_features = index_features.cuda(args.gpu, non_blocking=True)
+        features = features.cuda(args.gpu, non_blocking=True)
 
-    # Normalize the features
-    index_features = F.normalize(index_features.float())
+        # Normalize the features
+        index_features = F.normalize(index_features.float())
 
-    for predicted_feature, target_name, gt_img_ids in tqdm(zip(predicted_features, target_names, gts_img_ids)):
-        gt_img_ids = np.array(gt_img_ids)[
-            np.array(gt_img_ids) != '']  # remove trailing empty strings added for collate_fn
-        similarity = predicted_feature @ index_features.T
-        sorted_indices = torch.topk(similarity, dim=-1, k=50).indices.cpu()
-        sorted_index_names = np.array(index_names)[sorted_indices]
-        map_labels = torch.tensor(np.isin(sorted_index_names, gt_img_ids), dtype=torch.uint8)
-        precisions = torch.cumsum(map_labels, dim=0) * map_labels  # Consider only positions corresponding to GTs
-        precisions = precisions / torch.arange(1, map_labels.shape[0] + 1)  # Compute precision for each position
+        for feature, target_name, gt_img_ids in tqdm(zip(features, target_names, gts_img_ids)):
+            gt_img_ids = np.array(gt_img_ids)[
+                np.array(gt_img_ids) != '']  # remove trailing empty strings added for collate_fn
+            similarity = feature @ index_features.T
+            sorted_indices = torch.topk(similarity, dim=-1, k=50).indices.cpu()
+            sorted_index_names = np.array(index_names)[sorted_indices]
+            map_labels = torch.tensor(np.isin(sorted_index_names, gt_img_ids), dtype=torch.uint8)
+            precisions = torch.cumsum(map_labels, dim=0) * map_labels  # Consider only positions corresponding to GTs
+            precisions = precisions / torch.arange(1, map_labels.shape[0] + 1)  # Compute precision for each position
 
-        ap_at5.append(float(torch.sum(precisions[:5]) / min(len(gt_img_ids), 5)))
-        ap_at10.append(float(torch.sum(precisions[:10]) / min(len(gt_img_ids), 10)))
-        ap_at25.append(float(torch.sum(precisions[:25]) / min(len(gt_img_ids), 25)))
-        ap_at50.append(float(torch.sum(precisions[:50]) / min(len(gt_img_ids), 50)))
+            ap_at5.append(float(torch.sum(precisions[:5]) / min(len(gt_img_ids), 5)))
+            ap_at10.append(float(torch.sum(precisions[:10]) / min(len(gt_img_ids), 10)))
+            ap_at25.append(float(torch.sum(precisions[:25]) / min(len(gt_img_ids), 25)))
+            ap_at50.append(float(torch.sum(precisions[:50]) / min(len(gt_img_ids), 50)))
 
-        assert target_name == gt_img_ids[0], f"Target name not in GTs {target_name} {gt_img_ids}"
-        single_gt_labels = torch.tensor(sorted_index_names == target_name)
-        recall_at5.append(float(torch.sum(single_gt_labels[:5])))
-        recall_at10.append(float(torch.sum(single_gt_labels[:10])))
-        recall_at25.append(float(torch.sum(single_gt_labels[:25])))
-        recall_at50.append(float(torch.sum(single_gt_labels[:50])))
+            assert target_name == gt_img_ids[0], f"Target name not in GTs {target_name} {gt_img_ids}"
+            single_gt_labels = torch.tensor(sorted_index_names == target_name)
+            recall_at5.append(float(torch.sum(single_gt_labels[:5])))
+            recall_at10.append(float(torch.sum(single_gt_labels[:10])))
+            recall_at25.append(float(torch.sum(single_gt_labels[:25])))
+            recall_at50.append(float(torch.sum(single_gt_labels[:50])))
 
-    map_at5 = np.mean(ap_at5) * 100
-    map_at10 = np.mean(ap_at10) * 100
-    map_at25 = np.mean(ap_at25) * 100
-    map_at50 = np.mean(ap_at50) * 100
-    recall_at5 = np.mean(recall_at5) * 100
-    recall_at10 = np.mean(recall_at10) * 100
-    recall_at25 = np.mean(recall_at25) * 100
-    recall_at50 = np.mean(recall_at50) * 100
-
-    return {
-        'circo_map_at5': map_at5,
-        'circo_map_at10': map_at10,
-        'circo_map_at25': map_at25,
-        'circo_map_at50': map_at50,
-        'circo_recall_at5': recall_at5,
-        'circo_recall_at10': recall_at10,
-        'circo_recall_at25': recall_at25,
-        'circo_recall_at50': recall_at50,
-    }
+        result_dict[f"circo_map_at5_{name}"] = np.mean(ap_at5) * 100
+        result_dict[f"circo_map_at10_{name}"] = np.mean(ap_at10) * 100
+        result_dict[f"circo_map_at25_{name}"] = np.mean(ap_at25) * 100
+        result_dict[f"circo_map_at50_{name}"] = np.mean(ap_at50) * 100
+        result_dict[f"circo_recall_at5_{name}"] = np.mean(recall_at5) * 100
+        result_dict[f"circo_recall_at10_{name}"] = np.mean(recall_at10) * 100
+        result_dict[f"circo_recall_at25_{name}"] = np.mean(recall_at25) * 100
+        result_dict[f"circo_recall_at50_{name}"] = np.mean(recall_at50) * 100
+        """
+        result_dict ={
+            'circo_map_at5': map_at5,
+            'circo_map_at10': map_at10,
+            'circo_map_at25': map_at25,
+            'circo_map_at50': map_at50,
+            'circo_recall_at5': recall_at5,
+            'circo_recall_at10': recall_at10,
+            'circo_recall_at25': recall_at25,
+            'circo_recall_at50': recall_at50,}
+        """
+    return result_dict
 
 
 @torch.no_grad()
@@ -1155,7 +1388,6 @@ def circo_val_retrieval(dataset_path, model, img2text, retrieval_fuse, text_cond
     #if not is_master(args):
     #    return
     model.eval()
-    img2text.eval()
     model = model.module if args.distributed or args.dp else model
     logit_scale = model.logit_scale.exp()
     logit_scale = logit_scale.mean() 
