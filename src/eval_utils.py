@@ -331,6 +331,7 @@ def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, text_condition,da
     model.eval()
     img2text.eval()
     retrieval_fuse.eval()
+    text_consition.eval()
     all_image_features = []  
     all_target_labels = []      
     m = model.module if args.distributed or args.dp else model
@@ -366,13 +367,13 @@ def evaluate_imgnet_retrieval(model, img2text, retrieval_fuse, text_condition,da
             logit_scale = logit_scale.mean() 
 
         
-        for j in range(1,10):
-            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_{j}.pt"
+        for j in range(1,15):
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer/checkpoints/epoch_{2*j-1}.pt"
             img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
             img2text_tb = copy.deepcopy(img2text) 
             retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
             text_condition_tb = copy.deepcopy(text_condition)
-            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_{j}.pt"
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer/checkpoints/epoch_{2*j}.pt"
             img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
             ## Extract query features 
             for p_ind, p in enumerate(prompt):            
@@ -494,6 +495,8 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
         return
     model.eval()
     img2text.eval()
+    retrieval_fuse.eval()
+    text_condition.eval()
 
     all_image_features = []  
     all_query_image_features = []  
@@ -507,12 +510,18 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
     logit_scale = logit_scale.mean()
     with torch.no_grad():
         for j in range(1,10):
-            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_{j}.pt"
+            all_image_features = []  
+            all_query_image_features = []  
+            all_mixture_features = []  
+            all_composed_features_with_class = []  
+            all_text_full_features = []
+
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_999/checkpoints/epoch_{2*j-1}.pt"
             img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
             img2text_tb = copy.deepcopy(img2text) 
             retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
             text_condition_tb = copy.deepcopy(text_condition)
-            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_{j}.pt"
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_999/checkpoints/epoch_{2*j}.pt"
             img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
             ## Extract query features 
             for batch in tqdm(loader):
@@ -612,6 +621,8 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
         return
     model.eval()
     img2text.eval()
+    retrieval_fuse.eval()
+    text_condition.eval()
 
     templates = get_templates()
     all_image_features = []  
@@ -647,13 +658,13 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
                 all_target_paths.append(path)
             all_target_global = all_target_paths
 
-        for j in range(1,10):
-            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_5.pt"
+        for j in range(1,15):
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5/checkpoints/epoch_{2*j-1}.pt"
             img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
             img2text_tb = copy.deepcopy(img2text) 
             retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
             text_condition_tb = copy.deepcopy(text_condition)
-            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_6.pt"
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5/checkpoints/epoch_{2*j}.pt"
             img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
             #pdb.set_trace()
             all_query_image_features = []  
@@ -716,6 +727,7 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
                 #text_conditioned = text_condition(query_image_features.unsqueeze(1), topk_text_features,topk_text_features)
                 fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
                 text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
+                #pdb.set_trace()
 
                 #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
                 fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
@@ -809,8 +821,8 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
                     index_names=all_target_paths, 
                     target_names=all_answer_paths)
 
-            feats = {#'composed': torch.cat(all_composed_features), 
-                    #'image': torch.cat(all_query_image_features),
+            feats = {'composed': torch.cat(all_composed_features), 
+                    'image': torch.cat(all_query_image_features),
                     #'text': torch.cat(all_caption_features),
                     'mixture': torch.cat(all_mixture_features),
                     #'gt_text': torch.cat(all_gt_text_features)
@@ -829,6 +841,8 @@ def evaluate_cirr_test(model, img2text, retrieval_fuse, text_condition,database,
         return
     model.eval()
     img2text.eval()
+    retrieval_fuse.eval()
+    text_condition.eval()
 
     all_image_features = []  
     all_query_image_features = []  
@@ -926,6 +940,8 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
         return
     model.eval()
     img2text.eval()
+    retrieval_fuse.eval()
+    text_condition.eval()
     all_target_paths = []
     all_answer_paths = []
     all_image_features = []  
@@ -956,13 +972,15 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
     all_target_global = all_target_paths
     all_image_features_global = all_image_features
 
-    for j in range(1,10):
-        location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_8.pt"
+    for j in range(1,15):
+        #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_dr0.1/checkpoints/epoch_13.pt"
+        location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_{2*j-1}.pt"
         img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
         img2text_tb = copy.deepcopy(img2text) 
         retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
         text_condition_tb = copy.deepcopy(text_condition)
-        text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_14.pt"
+        text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_{2*j}.pt"
+        #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_dr0.1/checkpoints/epoch_{2*j}.pt"
         img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
         #pdb.set_trace()
         all_query_image_features = []  
@@ -1028,13 +1046,14 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
                 
                 query_image_features = composed_feature_tb
 
+                composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
                 caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
                 query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
                 mixture_features = 0.1* j * query_image_features + (1- 0.1 * j) * composed_feature   
                 #mixture_features = 0.025*query_image_features + 0.975*caption_features
                 mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
-                composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
+                
 
                 all_caption_features.append(caption_features)
                 all_query_image_features.append(query_image_features)

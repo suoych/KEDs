@@ -137,13 +137,13 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
                            middle_dim=args.middle_dim, 
                            output_dim=model.token_embedding.weight.shape[1], 
                            n_layer=args.n_layer)
-        retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
-        text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
+        retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3, dropout = 0.1)
+        text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3, dropout = 0.1)
         #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1])
-        text_condition = T2I(embed_dim=model.token_embedding.weight.shape[1], 
-                           middle_dim=args.middle_dim, 
-                           output_dim=model.visual.proj.shape[0], 
-                           n_layer=args.n_layer)
+        #text_condition = T2I(embed_dim=model.token_embedding.weight.shape[1], 
+        #                   middle_dim=args.middle_dim, 
+        #                   output_dim=model.visual.proj.shape[0], 
+        #                   n_layer=args.n_layer)
         
     except:
         print("Error!!!!")
@@ -430,7 +430,7 @@ def main():
     log_queue = setup_primary_logging(args.log_path, args.log_level)
     
     #pdb.set_trace()
-    
+    """
     # We load database here.
     Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database")#dino_cc_database") 
     print("Loading databases!")
@@ -454,6 +454,17 @@ def main():
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
     database = [image_bases,text_bases, base_names]
     torch.cuda.empty_cache()
+    """
+    print("Loading databases!")
+    image_bases = torch.load("/home/yucheng/cc_image_databases.pt",map_location="cpu")
+    text_bases = torch.load("/home/yucheng/cc_text_databases.pt",map_location="cpu")
+    subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
+    other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
+    basenames = []
+    with open("/home/yucheng/database_names.txt", "r") as f:
+        for line in f:
+            basenames.append(line.strip())
+    database = [image_bases,text_bases,basenames,subject_bases,other_bases]
     print("Loading databases done!")
     #pdb.set_trace()
 

@@ -193,7 +193,7 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
     By default we use faiss-gpu to boost inference speed.
     """
     if use_faiss:
-        image_base, text_base,basenames, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4]
+        image_base, text_base,basenames, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[-2], database[-1]
         
         feature = feature / feature.norm(dim=1, keepdim=True)
         #image_base = image_base / image_base.norm(dim=1, keepdim=True)
@@ -521,20 +521,21 @@ def save_feature(model, img2text, data, epoch, optimizer, scaler, scheduler, arg
 
     end = time.time()
     i = 0
-    model = model.cpu()
-    dinov2_vitb14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
-    dinov2_vitb14 = dinov2_vitb14.cuda()
-    dinov2_vitb14.eval()
+    #model = model.cpu()
+    #dinov2_vitb14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+    #dinov2_vitb14 = dinov2_vitb14.cuda()
+    #dinov2_vitb14.eval()
     for batch in dataloader:
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
 
         optimizer.zero_grad()
 
-        images, caps, base_name = batch[0], batch[1], batch[2] # this is the original code
+        #images, caps, base_name = batch[0], batch[1], batch[2] # this is the original code
+        images, caps, subject, other, base_name = batch[0], batch[1], batch[2], batch[3], batch[4]
         #pdb.set_trace()
-        if args.gpu is not None:
-            images = images.cuda(args.gpu, non_blocking=True)
+        #if args.gpu is not None:
+        #    images = images.cuda(args.gpu, non_blocking=True)
 
         data_time = time.time() - end
 
@@ -542,17 +543,24 @@ def save_feature(model, img2text, data, epoch, optimizer, scaler, scheduler, arg
         
 
         with torch.no_grad():
-            image_features = dinov2_vitb14(images)
+            #image_features = dinov2_vitb14(images)
             #image_features = m.encode_image(images)
             #image_features = result_list[-2]
             #text_p = tokenize(caps,truncate=True)
             #text_p = text_p.cuda(args.gpu, non_blocking=True)
             #text_p = model.encode_text(text_p)
+            text_s = tokenize(subject,truncate=True)
+            text_s = text_s.cuda(args.gpu, non_blocking=True)
+            text_s = model.encode_text(text_s)
+            text_o = tokenize(other,truncate=True)
+            text_o = text_o.cuda(args.gpu, non_blocking=True)
+            text_o = model.encode_text(text_o)
         
-        for j in range(image_features.shape[0]):
+        for j in range(images.shape[0]):
             file_name = base_name[j] + '.pt'
-            torch.save(image_features[j].clone(), os.path.join("/home/yucheng/cc_image_feature_folder", file_name))
-            #torch.save(text_p[j].clone(), os.path.join("/home/yucheng/cc_text_feature_folder", file_name))
+            #torch.save(image_features[j].clone(), os.path.join("/home/yucheng/cc_image_feature_folder", file_name))
+            torch.save(text_s[j].clone(), os.path.join("/home/yucheng/cc_text_feature_folder_subject", file_name))
+            torch.save(text_o[j].clone(), os.path.join("/home/yucheng/cc_text_feature_folder_other", file_name))
 
 
         batch_time = time.time() - end

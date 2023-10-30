@@ -98,13 +98,13 @@ def load_model(args):
                        middle_dim=args.middle_dim, 
                        output_dim=model.token_embedding.weight.shape[1],
                        n_layer=args.n_layer)
-    retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
-    #text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1])
+    retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
+    text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
     #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1]) 
-    text_condition = T2I(embed_dim=model.token_embedding.weight.shape[1], 
-                           middle_dim=args.middle_dim, 
-                           output_dim=model.visual.proj.shape[0], 
-                           n_layer=args.n_layer)
+    #text_condition = T2I(embed_dim=model.token_embedding.weight.shape[1], 
+    #                       middle_dim=args.middle_dim, 
+    #                       output_dim=model.visual.proj.shape[0], 
+    #                       n_layer=args.n_layer)
     # See https://discuss.pytorch.org/t/valueerror-attemting-to-unscale-fp16-gradients/81372
     if args.precision == "amp" or args.precision == "fp32" or args.gpu is None:
         convert_models_to_fp32(model)
@@ -229,52 +229,66 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     setup_log_save(args)
     # Load trained model
     model, img2text, retrieval_fuse,text_condition, preprocess_val = load_model(args)
-    #cudnn.benchmark = True
-    #cudnn.deterministic = False   
-    cudnn.benchmark = False        # if benchmark=True, deterministic will be False
-    cudnn.deterministic = True
+    cudnn.benchmark = True
+    cudnn.deterministic = False   
+    #cudnn.benchmark = False        # if benchmark=True, deterministic will be False
+    #cudnn.deterministic = True
     #cudnn.benchmark = True
     #cudnn.deterministic = False
-    seed_everything(args.seed)  
+    #seed_everything(args.seed)  
     #torch.cuda.manual_seed_all(args.seed) 
-    torch.use_deterministic_algorithms(True)
+    #torch.use_deterministic_algorithms(True)
     #root_project = os.path.join(get_project_root(), 'data')
     root_project = "/home/yucheng/comp_data"
 
     # We load database here.
-    """
+    
     Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database") #dino_cc_database")
     print("Loading databases!")
     dataloader = DataLoader(Base_dataset, batch_size=256, shuffle=False, num_workers=10)
     database = {}
     image_bases = []
     text_bases = []
+    subject_bases = []
+    other_bases = []
+    """
     basenames = []
     for batch in dataloader:
         batch_cp = copy.deepcopy(batch)  
         del batch 
-        image_base, text_base, basename = batch_cp[0], batch_cp[1],batch_cp[2]
+        image_base, text_base, basename, subject_base, other_base = batch_cp[0], batch_cp[1], batch_cp[2], batch_cp[3], batch_cp[4]
         image_bases.append(image_base)
         text_bases.append(text_base)
+        subject_bases.append(subject_base)
+        other_bases.append(other_base)
         for item in basename:
             basenames.append(item)
     image_bases = torch.cat(image_bases,dim=0)
     text_bases = torch.cat(text_bases,dim=0)
+    subject_bases = torch.cat(subject_bases,dim=0)
+    other_bases = torch.cat(other_bases,dim=0)
     image_bases = image_bases.cpu()
     text_bases = text_bases.cpu()
+    subject_bases = subject_bases.cpu()
+    other_bases = other_bases.cpu()
     image_bases = image_bases / image_bases.norm(dim=1, keepdim=True)
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
-    database = [image_bases,text_bases,basenames]
+    subject_bases = subject_bases / subject_bases.norm(dim=1, keepdim=True)
+    other_bases = other_bases / other_bases.norm(dim=1, keepdim=True)
+    database = [image_bases,text_bases,basenames,subject_bases,other_bases]
+    pdb.set_trace()
     """
     print("Loading databases!")
     image_bases = torch.load("/home/yucheng/cc_image_databases.pt",map_location="cpu")
     text_bases = torch.load("/home/yucheng/cc_text_databases.pt",map_location="cpu")
+    subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
+    other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
     basenames = []
     with open("/home/yucheng/database_names.txt", "r") as f:
         for line in f:
             basenames.append(line.strip())
-    database = [image_bases,text_bases,basenames]
-
+    database = [image_bases,text_bases,basenames,subject_bases,other_bases]
+    
     ngpus = faiss.get_num_gpus()
     print("number of GPUs:", ngpus)
     image_cpu_index = faiss.IndexFlatL2(768)
@@ -428,13 +442,13 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     elif args.eval_mode == 'circo':
         circo_path = os.path.join(root_project, 'CIRCO')
         relative_val_dataset = CIRCODataset(circo_path, 'val', 'relative', preprocess_val)
-        for j in range(1,10):
-            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_mapfirst_42/checkpoints/epoch_{j}.pt"
+        for j in range(1,15):
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5/checkpoints/epoch_{2*j-1}.pt"
             img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
             img2text_tb = copy.deepcopy(img2text) 
             retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
             text_condition_tb = copy.deepcopy(text_condition)
-            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext/checkpoints/epoch_{j}.pt"
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5/checkpoints/epoch_{2*j}.pt"
             img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
             #pdb.set_trace()
             img2text_l = [img2text,img2text_tb] 
