@@ -775,7 +775,9 @@ class CustomFolderCC(Dataset):
         #cap = cap_dict[basename]
         subject = subject_dict[basename]
         otherpart = other_dict[basename]
-        otherpart = "a photo of * * * " + otherpart
+        #otherpart = "a photo of * * * " + otherpart.replace("*", " ")
+        otherpart = "a photo of * " + otherpart.replace("*", " ")
+        #otherpart = otherpart.replace("*", "* * *")
         #global_preprocess_train(Image.open(BytesIO(value)))
         image_sample = torch.load(str(path), map_location=torch.device('cpu'))#Image.open(str(path))
         #if self.transform is not None:

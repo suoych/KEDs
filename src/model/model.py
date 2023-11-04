@@ -27,6 +27,13 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 import pdb
 
+def find_first_nonzero_indices(tensor):
+    is_nonzero = tensor != 0
+    very_large_value = torch.max(tensor) + 1
+    tensor_with_large_value = torch.where(is_nonzero, tensor, very_large_value)
+    first_nonzero_indices = torch.argmin(tensor_with_large_value, dim=1).tolist()
+    return first_nonzero_indices
+
 class CrossAttention(nn.Module):
     def __init__(self, q_dim,k_dim,v_dim, heads = 8, dim_head = 64, dropout = 0.):
         super().__init__()
@@ -841,14 +848,30 @@ class CLIP(nn.Module):
         # img_tokens.shape = [batch_size, d_model]        
         b_size = img_tokens.shape[0]
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+        #pdb.set_trace()
         collect_ind = text == self.end_id 
         collect_ind = collect_ind.nonzero()[:, 1]
-        ind_insert = text[0] == split_ind   
+        #ind_insert = text[0] == split_ind   
+
+        #flexible insert index
+        #ind_insert = text == split_ind 
+        ind_insert = text[0] == split_ind 
+        ind_insert = ind_insert.nonzero()[0]
+        #ind_insert = ind_insert.nonzero()
+
+        #ind_insert = find_first_nonzero_indices(ind_insert)
+        #ind_insert = torch.cat(ind_insert)
+        #pdb.set_trace()
+
+        #for i in range(x.shape[0]):
+        #    x[i,ind_insert[i]:ind_insert[i]+3,:] = img_tokens[i]
+        #pdb.set_trace()
         
         #img_tokens = img_tokens.view(b_size, 1, -1)
-        ind_insert = ind_insert.nonzero()[0]
-        #x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:]], dim=1)
-        x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+3:]], dim=1)
+        #ind_insert = ind_insert.nonzero()[0]
+
+        x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:]], dim=1) # only one token
+        #x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+3:]], dim=1)
         #x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:-2]], dim=1)
         #x = torch.cat([x, torch.zeros_like(x).cuda()[:, :1, :]], dim=1)
         x = x + self.positional_embedding.type(self.dtype)

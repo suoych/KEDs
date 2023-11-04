@@ -229,15 +229,15 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     setup_log_save(args)
     # Load trained model
     model, img2text, retrieval_fuse,text_condition, preprocess_val = load_model(args)
-    cudnn.benchmark = True
-    cudnn.deterministic = False   
-    #cudnn.benchmark = False        # if benchmark=True, deterministic will be False
-    #cudnn.deterministic = True
+    #cudnn.benchmark = True
+    #cudnn.deterministic = False   
+    cudnn.benchmark = False        # if benchmark=True, deterministic will be False
+    cudnn.deterministic = True
     #cudnn.benchmark = True
     #cudnn.deterministic = False
-    #seed_everything(args.seed)  
-    #torch.cuda.manual_seed_all(args.seed) 
-    #torch.use_deterministic_algorithms(True)
+    seed_everything(args.seed)  
+    torch.cuda.manual_seed_all(args.seed) 
+    torch.use_deterministic_algorithms(True)
     #root_project = os.path.join(get_project_root(), 'data')
     root_project = "/home/yucheng/comp_data"
 

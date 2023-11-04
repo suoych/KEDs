@@ -70,7 +70,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
     #torch.cuda.manual_seed_all(args.seed) 
     torch.use_deterministic_algorithms(True)
 
-    image_bases,text_bases = database[0], database[1]
+    image_bases,text_bases,subject_bases,other_bases = database[0], database[1], database[3],database[4]
     ngpus = faiss.get_num_gpus()
     image_cpu_index = faiss.IndexFlatL2(768)
     res = faiss.StandardGpuResources()
@@ -82,9 +82,21 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
     #text_gpu_index = faiss.index_cpu_to_all_gpus(text_cpu_index)
     text_gpu_index = faiss.index_cpu_to_gpu(res, gpu, text_cpu_index)
     text_gpu_index.add(text_bases.numpy())  # add vectors to the image_index
+
+    """
+    subject_cpu_index = faiss.IndexFlatL2(768)
+    subject_gpu_index = faiss.index_cpu_to_gpu(res, gpu, subject_cpu_index)
+    subject_gpu_index.add(subject_bases.numpy())  # add vectors to the image_index
+    other_cpu_index = faiss.IndexFlatL2(768)
+    other_gpu_index = faiss.index_cpu_to_gpu(res, gpu, other_cpu_index)
+    other_gpu_index.add(other_bases.numpy())  # add vectors to the image_index
+    """
+    
     #text_cpu_index.add(text_bases.numpy())
     database.append(image_gpu_index)
     database.append(text_gpu_index)
+    #database.append(subject_gpu_index)
+    #database.append(other_gpu_index)
     #database.append(image_cpu_index)
     #database.append(text_cpu_index)
     print("Adding indices done!")
@@ -224,6 +236,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
         )
         total_steps = data["train"].dataloader.num_batches * args.epochs
         scheduler = cosine_lr(optimizer, args.lr, args.warmup, total_steps)
+        #scheduler = None
 
     scaler = GradScaler() if args.precision == "amp" else None #or args.precision == "fp16" else None
 
