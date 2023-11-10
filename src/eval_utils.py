@@ -209,7 +209,7 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
     """
     if use_faiss:
         #image_base, text_base,basenames,subject_base, other_base, image_gpu_index, text_gpu_index, subject_gpu_index, other_gpu_index = database[0], database[1],database[2], database[3], database[4], database[5], database[6], database[7], database[8]
-        image_base, text_base,basenames,subject_base, other_base, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4], database[5], database[6]
+        image_base, text_base,basenames,  image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4]
         
         feature = feature / feature.norm(dim=1, keepdim=True)
         #image_base = image_base / image_base.norm(dim=1, keepdim=True)
@@ -532,7 +532,7 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
     logit_scale = m.logit_scale.exp()
     logit_scale = logit_scale.mean()
     with torch.no_grad():
-        for j in range(1,7):
+        for j in range(1,26):
             print("j =",0.05*j)
             all_image_features = []  
             all_query_image_features = []  
@@ -540,16 +540,16 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
             all_composed_features_with_class = []  
             all_text_full_features = []
 
-            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_999/checkpoints/epoch_10.pt"
+            #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_999/checkpoints/epoch_10.pt"
             #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_originplace/checkpoints/epoch_5.pt"
-            #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_{2*j-1}.pt"
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_dr0.1_50epoch_20000warm/checkpoints/epoch_{2*j-1}.pt"
             img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
             img2text_tb = copy.deepcopy(img2text) 
             retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
             text_condition_tb = copy.deepcopy(text_condition)
             #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_7.pt"
-            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_13.pt"
-            #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_{2*j}.pt"
+            #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_13.pt"
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_dr0.1_50epoch_20000warm/checkpoints/epoch_{2*j}.pt"
             img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
 
             img2text_tb.eval()
@@ -603,8 +603,8 @@ def evaluate_coco(model, img2text, retrieval_fuse, text_condition,database, args
                 text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
                 fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
                 query_image_tokens_tb = fused_features_tb                   
-                composed_feature_tb = m.encode_text_img_retrieval(text_with_blank, query_image_tokens_tb, split_ind=id_split, repeat=False)  
-                #composed_feature_tb = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens_tb, split_ind=id_split, repeat=False) 
+                #composed_feature_tb = m.encode_text_img_retrieval(text_with_blank, query_image_tokens_tb, split_ind=id_split, repeat=False)  
+                composed_feature_tb = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens_tb, split_ind=id_split, repeat=False) 
                 
                 query_image_features = composed_feature_tb
                 composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)
@@ -691,13 +691,17 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
                 all_target_paths.append(path)
             all_target_global = all_target_paths
 
-        for j in range(1,10):
-            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_1024_1e-4/checkpoints/epoch_8.pt"
+        for j in range(1,31):
+            #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_1024_1e-4/checkpoints/epoch_8.pt"
+            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_2tokens_capfuse/checkpoints/epoch_{j}.pt"
+            #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_{2*j-1}.pt"
             img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
             img2text_tb = copy.deepcopy(img2text) 
             retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
             text_condition_tb = copy.deepcopy(text_condition)
-            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_10.pt"
+            #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_10.pt"
+            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_13.pt"
+            #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_{j}.pt"
             img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
             #pdb.set_trace()
             all_query_image_features = []  
@@ -762,7 +766,7 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
                 text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
                 #pdb.set_trace()
 
-                #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
+                #fused_features = torch.cat([text_conditioned,mapped_features.unsqueeze(1)],dim=1)
                 fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
                 #fused_features = mapped_features.unsqueeze(1)
 
@@ -799,7 +803,8 @@ def evaluate_cirr(model, img2text, retrieval_fuse, text_condition,database, args
                 caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
                 query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
                 composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)      
-                mixture_features = 0.1* j * query_image_features + (1- 0.1 * j) * composed_feature            
+                #mixture_features = 0.1* j * query_image_features + (1- 0.1 * j) * composed_feature 
+                mixture_features = 0.5 * query_image_features + 0.5 * composed_feature           
                 mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
                 all_caption_features.append(caption_features)
                 all_query_image_features.append(query_image_features)
@@ -877,12 +882,15 @@ def evaluate_cirr_test(model, img2text, retrieval_fuse, text_condition,database,
     retrieval_fuse.eval()
     text_condition.eval()
 
-    location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_1024_1e-4/checkpoints/epoch_8.pt"
+    #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_1024_1e-4/checkpoints/epoch_8.pt"
+    #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_1024_1e-4/checkpoints/epoch_4.pt"
+    #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_1024_1e-4/checkpoints/epoch_9.pt"
+    location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_1024_1e-4/checkpoints/epoch_10.pt"
     img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
     img2text_tb = copy.deepcopy(img2text) 
     retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
     text_condition_tb = copy.deepcopy(text_condition)
-    text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_10.pt"
+    text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_13.pt"
     img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
     
     #pdb.set_trace()
@@ -1032,18 +1040,20 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
     all_target_global = all_target_paths
     all_image_features_global = all_image_features
 
-    for j in range(4,12):
-        print("j =",0.05 * j)
-        location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_dr0.1/checkpoints/epoch_13.pt"
+    for j in range(1,16):
+        #print("j =",0.05 * j)
+        #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_dr0.1_50epoch_20000warm/checkpoints/epoch_15.pt" # for shirt epoch9 0.3 toptee 15 0.35
+        #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5_dr0.1/checkpoints/epoch_13.pt"
         #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_5e-5_dr0.2/checkpoints/epoch_16.pt"
-        #location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_{2*j-1}.pt"
+        location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_2tokens_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_{2*j-1}.pt"
         img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
         img2text_tb = copy.deepcopy(img2text) 
         retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
         text_condition_tb = copy.deepcopy(text_condition)
+        
         #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_onlytext_3layer/checkpoints/epoch_22.pt"
-        text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_20.pt"
-        #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_{2*j}.pt"
+        #text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_20.pt"
+        text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_onlytext_2tokens_3layers_extra_cap_1e-4_bs120/checkpoints/epoch_{2*j}.pt"
         img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
         #pdb.set_trace()
         all_query_image_features = []  
@@ -1081,31 +1091,31 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
 
                 mapped_features = img2text(query_image_features)
                 topk_image_features = img2text(topk_image)
-                topk_text_features = img2text(topk_text)
                 #cap_feature = img2text(caption_features)
 
                 fused_features = retrieval_fuse(mapped_features.unsqueeze(1), topk_image_features,topk_image_features)
-                text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
-                #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1),cap_feature.unsqueeze(1)],dim=1)
-                fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
+                #text_conditioned = text_condition(mapped_features.unsqueeze(1), topk_text_features,topk_text_features)
+                #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)
+                fused_features = torch.cat([fused_features,mapped_features.unsqueeze(1)],dim=1)
                 query_image_tokens = fused_features
 
                 #fused_features = retrieval_fuse(query_image_features.unsqueeze(1), topk_image_features,topk_image_features)
                 #fused_features = fused_features.squeeze(1) + query_image_features + caption_features
                 #query_image_tokens  = img2text(fused_features)                      
-                composed_feature = m.encode_text_img_retrieval(target_caption, query_image_tokens, split_ind=id_split, repeat=False)                            
+                composed_feature = m.encode_text_img_train(target_caption, query_image_tokens, split_ind=id_split, repeat=False)                            
                 #composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)
                 
 
                 #text branch
                 mapped_features_tb = img2text_tb(query_image_features)
                 topk_image_features_tb = img2text_tb(topk_image)
-                topk_text_features_tb = img2text_tb(topk_text)
+                #topk_text_features_tb = img2text_tb(topk_text)
                 fused_features_tb = retrieval_fuse_tb(mapped_features_tb.unsqueeze(1), topk_image_features_tb,topk_image_features_tb)
-                text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
-                fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
+                #text_conditioned_tb = text_condition_tb(mapped_features_tb.unsqueeze(1), topk_text_features_tb,topk_text_features_tb)
+                #fused_features_tb = torch.cat([fused_features_tb,text_conditioned_tb,mapped_features_tb.unsqueeze(1)],dim=1)
+                fused_features_tb = torch.cat([fused_features_tb,mapped_features_tb.unsqueeze(1)],dim=1)
                 query_image_tokens_tb = fused_features_tb                    
-                composed_feature_tb = m.encode_text_img_retrieval(target_caption, query_image_tokens_tb, split_ind=id_split, repeat=False) 
+                composed_feature_tb = m.encode_text_img_train(target_caption, query_image_tokens_tb, split_ind=id_split, repeat=False) 
                 
                 query_image_features = composed_feature_tb
 
@@ -1113,7 +1123,8 @@ def evaluate_fashion(model, img2text, retrieval_fuse, text_condition,database, a
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
                 caption_features = caption_features / caption_features.norm(dim=-1, keepdim=True)                       
                 query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)   
-                mixture_features = 0.05* j * query_image_features + (1- 0.05 * j) * composed_feature   
+                #mixture_features = 0.05* j * query_image_features + (1- 0.05 * j) * composed_feature  
+                mixture_features = 0.3 * query_image_features + 0.7 * composed_feature   
                 #mixture_features = 0.025*query_image_features + 0.975*caption_features
                 mixture_features = mixture_features / mixture_features.norm(dim=-1, keepdim=True)
                 
@@ -1198,7 +1209,7 @@ def get_metrics_cirr(image_features, ref_features, reference_names, index_names,
         len(index_names)).reshape(len(target_names), -1))        
     sorted_index_names = sorted_index_names[reference_mask].reshape(sorted_index_names.shape[0],
                                                                     sorted_index_names.shape[1] - 1)
-
+    #pdb.set_trace()
     # Compute the ground-truth labels wrt the predictions
     labels = torch.tensor(
         sorted_index_names == np.repeat(np.array(target_names), 

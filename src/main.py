@@ -70,7 +70,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
     #torch.cuda.manual_seed_all(args.seed) 
     torch.use_deterministic_algorithms(True)
 
-    image_bases,text_bases,subject_bases,other_bases = database[0], database[1], database[3],database[4]
+    image_bases,text_bases = database[0], database[1]
     ngpus = faiss.get_num_gpus()
     image_cpu_index = faiss.IndexFlatL2(768)
     res = faiss.StandardGpuResources()
@@ -149,8 +149,8 @@ def main_worker(gpu, ngpus_per_node, log_queue, args,database=None):
                            middle_dim=args.middle_dim, 
                            output_dim=model.token_embedding.weight.shape[1], 
                            n_layer=args.n_layer)
-        retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3, dropout = 0.1)
-        text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3, dropout = 0.1)
+        retrieval_fuse = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
+        text_condition = CrossFormer(q_dim=model.token_embedding.weight.shape[1],k_dim=model.token_embedding.weight.shape[1],v_dim=model.token_embedding.weight.shape[1],num_layers = 3)
         #img2text = CrossFormer(q_dim=model.visual.proj.shape[0],dim=model.token_embedding.weight.shape[1])
         #text_condition = T2I(embed_dim=model.token_embedding.weight.shape[1], 
         #                   middle_dim=args.middle_dim, 
@@ -445,7 +445,7 @@ def main():
     #pdb.set_trace()
     """
     # We load database here.
-    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database")#dino_cc_database") 
+    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database_100000")#dino_cc_database") 
     print("Loading databases!")
     dataloader = DataLoader(Base_dataset, batch_size=512, shuffle=False, num_workers=10)
     database = {}
@@ -467,20 +467,21 @@ def main():
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
     database = [image_bases,text_bases, base_names]
     torch.cuda.empty_cache()
+    pdb.set_trace()
     """
     print("Loading databases!")
     image_bases = torch.load("/home/yucheng/cc_image_databases.pt",map_location="cpu")
     text_bases = torch.load("/home/yucheng/cc_text_databases.pt",map_location="cpu")
-    subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
-    other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
+    #subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
+    #other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
     basenames = []
     with open("/home/yucheng/database_names.txt", "r") as f:
         for line in f:
             basenames.append(line.strip())
-    database = [image_bases,text_bases,basenames,subject_bases,other_bases]
+    database = [image_bases,text_bases,basenames]#,subject_bases,other_bases]
     print("Loading databases done!")
     #pdb.set_trace()
-
+    
     # Distributed training = training on more than one GPU.
     # Also easily possible to extend to multiple nodes & multiple GPUs.
     args.distributed = (args.gpu is None) and torch.cuda.is_available() and (not args.dp)

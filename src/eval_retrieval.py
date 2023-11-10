@@ -243,9 +243,9 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
 
     # We load database here.
     
-    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database") #dino_cc_database")
+    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database_750000") #dino_cc_database")
     print("Loading databases!")
-    dataloader = DataLoader(Base_dataset, batch_size=256, shuffle=False, num_workers=10)
+    dataloader = DataLoader(Base_dataset, batch_size=100, shuffle=False, num_workers=10)
     database = {}
     image_bases = []
     text_bases = []
@@ -256,38 +256,39 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     for batch in dataloader:
         batch_cp = copy.deepcopy(batch)  
         del batch 
-        image_base, text_base, basename, subject_base, other_base = batch_cp[0], batch_cp[1], batch_cp[2], batch_cp[3], batch_cp[4]
+        #image_base, text_base, basename, subject_base, other_base = batch_cp[0], batch_cp[1], batch_cp[2], batch_cp[3], batch_cp[4]
+        image_base, text_base, basename = batch_cp[0], batch_cp[1], batch_cp[2]#, batch_cp[3], batch_cp[4]
         image_bases.append(image_base)
         text_bases.append(text_base)
-        subject_bases.append(subject_base)
-        other_bases.append(other_base)
+        #subject_bases.append(subject_base)
+        #other_bases.append(other_base)
         for item in basename:
             basenames.append(item)
     image_bases = torch.cat(image_bases,dim=0)
     text_bases = torch.cat(text_bases,dim=0)
-    subject_bases = torch.cat(subject_bases,dim=0)
-    other_bases = torch.cat(other_bases,dim=0)
+    #subject_bases = torch.cat(subject_bases,dim=0)
+    #other_bases = torch.cat(other_bases,dim=0)
     image_bases = image_bases.cpu()
     text_bases = text_bases.cpu()
-    subject_bases = subject_bases.cpu()
-    other_bases = other_bases.cpu()
+    #subject_bases = subject_bases.cpu()
+    #other_bases = other_bases.cpu()
     image_bases = image_bases / image_bases.norm(dim=1, keepdim=True)
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
-    subject_bases = subject_bases / subject_bases.norm(dim=1, keepdim=True)
-    other_bases = other_bases / other_bases.norm(dim=1, keepdim=True)
-    database = [image_bases,text_bases,basenames,subject_bases,other_bases]
+    #subject_bases = subject_bases / subject_bases.norm(dim=1, keepdim=True)
+    #other_bases = other_bases / other_bases.norm(dim=1, keepdim=True)
+    database = [image_bases,text_bases,basenames]#,subject_bases,other_bases]
     pdb.set_trace()
     """
     print("Loading databases!")
     image_bases = torch.load("/home/yucheng/cc_image_databases.pt",map_location="cpu")
     text_bases = torch.load("/home/yucheng/cc_text_databases.pt",map_location="cpu")
-    subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
-    other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
+    #subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
+    #other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
     basenames = []
     with open("/home/yucheng/database_names.txt", "r") as f:
         for line in f:
             basenames.append(line.strip())
-    database = [image_bases,text_bases,basenames,subject_bases,other_bases]
+    database = [image_bases,text_bases,basenames]#,subject_bases,other_bases]
     
     ngpus = faiss.get_num_gpus()
     print("number of GPUs:", ngpus)

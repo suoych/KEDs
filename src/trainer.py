@@ -68,6 +68,7 @@ def get_loss_img2text_image(model, img2text,retrieval_fuse, text_condition, imag
     #fused_features = fused_features.squeeze(1) + text_conditioned.squeeze(1) #+ image_features + cap_feature
 
     fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)#,cap_feature.unsqueeze(1)],dim=1)
+    #fused_features = torch.cat([text_conditioned,mapped_features.unsqueeze(1)],dim=1)#,cap_feature.unsqueeze(1)],dim=1)
     #token_features = img2text(image_features)
     token_features = fused_features
 
@@ -202,8 +203,7 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
     """
     if use_faiss:
         #image_base, text_base,basenames,subject_base, other_base, image_gpu_index, text_gpu_index, subject_gpu_index, other_gpu_index = database[0], database[1],database[2], database[3], database[4], database[5], database[6], database[7], database[8]
-        image_base, text_base,basenames,subject_base, other_base, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4], database[5], database[6]
-        
+        image_base, text_base,basenames, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4]
         feature = feature / feature.norm(dim=1, keepdim=True)
         #image_base = image_base / image_base.norm(dim=1, keepdim=True)
         #text_base = text_base / text_base.norm(dim=1, keepdim=True)
@@ -223,6 +223,9 @@ def get_retrieved_features(feature, database,args,topk=16,use_faiss=True):
         b,k = topk_text_indices.shape[0],topk_text_indices.shape[1]
         topk_text_features = text_base[topk_text_indices.reshape(-1)]
         topk_text_features = topk_text_features.reshape(b,k,-1)
+        # random shuffle
+        #idx = torch.randperm(topk_text_features.shape[1])
+        #topk_text_features = topk_text_features[:,idx,:]
 
         topk_image_features = topk_image_features.clone().to(feature.device)
         topk_text_features = topk_text_features.clone().to(feature.device)
@@ -263,8 +266,7 @@ def get_extra_cap_features(feature, database,args,topk=2):
     By default we use faiss-gpu to boost inference speed.
     """
     #image_base, text_base,basenames,subject_base, other_base, image_gpu_index, text_gpu_index, subject_gpu_index, other_gpu_index = database[0], database[1],database[2], database[3], database[4], database[5], database[6], database[7], database[8]
-    image_base, text_base, basenames, subject_base, other_base, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4], database[5], database[6]
-    
+    image_base, text_base, basenames, image_gpu_index, text_gpu_index = database[0], database[1],database[2], database[3], database[4]
     feature = feature / feature.norm(dim=1, keepdim=True)
 
     _, topk_text_indices = text_gpu_index.search(feature.clone().cpu().numpy(), topk) # search topk
@@ -298,7 +300,7 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
     #pdb.set_trace()
 
     mapped_features = img2text(image_features)
-    #topk_image_features = img2text(topk_image_features)
+    topk_image_features = img2text(topk_image_features)
     #topk_text_features = img2text(topk_text_features)
     #cap_feature = img2text(ori_cap_feature)
 
@@ -308,6 +310,7 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
     #fused_features = fused_features.squeeze(1) + text_conditioned.squeeze(1) #+ image_features + cap_feature
 
     #fused_features = torch.cat([fused_features,text_conditioned,mapped_features.unsqueeze(1)],dim=1)#,cap_feature.unsqueeze(1)],dim=1)
+    fused_features = torch.cat([fused_features,mapped_features.unsqueeze(1)],dim=1)#,cap_feature.unsqueeze(1)],dim=1)
     #token_features = img2text(image_features)
     token_features = fused_features
 
@@ -319,7 +322,7 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
     
     top2_cap_embedding, top2_basenames = get_extra_cap_features(ori_cap_feature, database, args)
     #top2_extra_other = ["a photo of * * * " + other_dict[name.split(".")[0]].replace("*", " ") for name in top2_basenames]
-    top2_extra_other = ["a photo of * " + other_dict[name.split(".")[0]].replace("*", " ") for name in top2_basenames]
+    top2_extra_other = ["a photo of * * " + other_dict[name.split(".")[0]].replace("*", " ") for name in top2_basenames]
     b,l,d = token_features.shape
     top2_cap_embedding = top2_cap_embedding.reshape(2*b,-1)
     other_extra_embedded_features = get_cap_embedded_features(model, token_features.unsqueeze(1).repeat(1,2,1,1).reshape(2*b,l,d), top2_extra_other, args)
@@ -463,15 +466,15 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
         # with automatic mixed precision.
         if args.precision == "amp" :#or args.precision == "fp16":
             with autocast():
-                total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
-                #total_loss = get_loss_img2text_image(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
+                #total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
+                total_loss = get_loss_img2text_image(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
                 scaler.scale(total_loss).backward()
                 scaler.step(optimizer)
             scaler.update()
 
         else:
-            total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
-            #total_loss = get_loss_img2text_image(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
+            #total_loss = get_loss_img2text(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
+            total_loss = get_loss_img2text_image(m, img2text, retrieval_fuse, text_condition, images, caps, loss_img, loss_txt, loss_extra, args, database=database)
             total_loss.backward()
             optimizer.step()
 

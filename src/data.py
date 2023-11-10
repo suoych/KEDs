@@ -775,8 +775,8 @@ class CustomFolderCC(Dataset):
         #cap = cap_dict[basename]
         subject = subject_dict[basename]
         otherpart = other_dict[basename]
-        #otherpart = "a photo of * * * " + otherpart.replace("*", " ")
-        otherpart = "a photo of * " + otherpart.replace("*", " ")
+        otherpart = "a photo of * * * " + otherpart.replace("*", " ")
+        #otherpart = "a photo of * * " + otherpart.replace("*", " ")
         #otherpart = otherpart.replace("*", "* * *")
         #global_preprocess_train(Image.open(BytesIO(value)))
         image_sample = torch.load(str(path), map_location=torch.device('cpu'))#Image.open(str(path))
@@ -791,8 +791,8 @@ class LoadDataBase(Dataset):
     def __init__(self, folder):
         self.image_folder = os.path.join(folder,"image_feature_database")
         self.text_folder = os.path.join(folder,"text_feature_database")
-        self.subject_folder = os.path.join(folder,"subject_feature_database")
-        self.other_folder = os.path.join(folder,"other_feature_database")
+        #self.subject_folder = os.path.join(folder,"subject_feature_database")
+        #self.other_folder = os.path.join(folder,"other_feature_database")
         self.image_lists = os.listdir(self.image_folder)
 
     def __len__(self):
@@ -808,18 +808,18 @@ class LoadDataBase(Dataset):
         """
         image_path = os.path.join(self.image_folder, self.image_lists[index])
         text_path = os.path.join(self.text_folder, self.image_lists[index])
-        subject_path = os.path.join(self.subject_folder, self.image_lists[index])
-        other_path = os.path.join(self.other_folder, self.image_lists[index])
+        #subject_path = os.path.join(self.subject_folder, self.image_lists[index])
+        #other_path = os.path.join(self.other_folder, self.image_lists[index])
         image_sample = torch.load(str(image_path), map_location=torch.device('cpu'))
         text_sample = torch.load(str(text_path), map_location=torch.device('cpu'))
-        subject_sample = torch.load(str(subject_path), map_location=torch.device('cpu'))
-        other_sample = torch.load(str(other_path), map_location=torch.device('cpu'))
-        subject_sample = subject_sample.detach().squeeze()
-        other_sample = other_sample.detach().squeeze()
-        other_sample.requires_grad = False
-        subject_sample.requires_grad = False
-        other_sample.requires_grad = False
-        return image_sample,text_sample, self.image_lists[index], subject_sample, other_sample
+        #subject_sample = torch.load(str(subject_path), map_location=torch.device('cpu'))
+        #other_sample = torch.load(str(other_path), map_location=torch.device('cpu'))
+        #subject_sample = subject_sample.detach().squeeze()
+        #other_sample = other_sample.detach().squeeze()
+        #other_sample.requires_grad = False
+        #subject_sample.requires_grad = False
+        #other_sample.requires_grad = False
+        return image_sample,text_sample, self.image_lists[index]#, subject_sample, other_sample
 
 class CsvDataset(Dataset):
     def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t",
