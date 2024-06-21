@@ -16,10 +16,16 @@ For other preparation, please refer to Pic2word project.
 ### Training command
 
 #### For raw folders
+```
 python -u src/main.py --save-frequency 1 --train-data="./cc3m/image_byte_224" --dataset-type directory --warmup 10000 --batch-size=128  --lr=1e-4 --wd=0.1  --epochs=30 --workers=6 --openai-pretrained --model ViT-L/14  --dist-url tcp://127.0.0.1:6102 --seed 999
+```
 
 ### Demo inference command 
+```
 python src/demo.py --openai-pretrained --resume ./pic2word_model.pt --retrieval-data imgnet --query_file "./data/test.jpg" --prompts "a cartoon of *" --demo-out ./demo_result --gpu 1 --model ViT-L/14
+```
 
 ### Evaluation for metrics command
+```
 python src/eval_retrieval.py --openai-pretrained --resume ./pic2word_model.pt --eval-mode cirr --gpu 0 --model ViT-L/14 --distributed --dist-url tcp://127.0.0.1:6101
+```
