@@ -25,7 +25,7 @@ from torch import nn
 import torch.distributed as dist
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-import pdb
+
 
 def find_first_nonzero_indices(tensor):
     is_nonzero = tensor != 0
@@ -619,7 +619,6 @@ class CLIP(nn.Module):
         # take features from the eot embedding (eot_token is the highest number in each sequence)    
         #x = x[torch.arange(x.size(0)), collect_ind+1] @ self.text_projection
         x = x[torch.arange(x.size(0)), collect_ind] @ self.text_projection # we don't plus one cause we did not concat the img token
-        #pdb.set_trace()
         return x
     
     def random_masking(self, x, mask_ratio):
@@ -667,7 +666,7 @@ class CLIP(nn.Module):
         #x = x[:,0,:].unsqueeze(1)
         x = torch.cat([x[:,0,:].unsqueeze(1), x_masked], dim=1)
 
-        #pdb.set_trace()
+        
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:].mean(dim=1, keepdim=True)], dim=1) # average pooling
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
@@ -695,7 +694,7 @@ class CLIP(nn.Module):
         x = self.visual.ln_pre(x)
         x_ori = x 
         
-        #pdb.set_trace()
+        
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature, x[:, 1:]], dim=1)
         #x = torch.cat([x[:, 0].unsqueeze(1), text_feature], dim=1)
         #x = x[:, 0].unsqueeze(1)
@@ -719,7 +718,7 @@ class CLIP(nn.Module):
         #x = x[:,0,:].unsqueeze(1)
         t = torch.cat([x_ori[:,0,:].unsqueeze(1), t_masked], dim=1)
 
-        #pdb.set_trace()
+        
 
         t = t.permute(1, 0, 2)  # NLD -> LND
         t = self.visual.transformer(t,text_feature=text_feature)
@@ -759,7 +758,7 @@ class CLIP(nn.Module):
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
         collect_ind = text == self.end_id 
         collect_ind = collect_ind.nonzero()[:, 1]
-        #pdb.set_trace()
+        
         #img_tokens = img_tokens.view(b_size, 1, -1)
         #x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]:-1]], dim=1)
         #img_tokens = img_tokens.view(b_size, 3, -1)
@@ -856,7 +855,7 @@ class CLIP(nn.Module):
         # img_tokens.shape = [batch_size, d_model]        
         b_size = img_tokens.shape[0]
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
-        #pdb.set_trace()
+        
         collect_ind = text == self.end_id 
         collect_ind = collect_ind.nonzero()[:, 1]
         #ind_insert = text[0] == split_ind   
@@ -869,11 +868,11 @@ class CLIP(nn.Module):
 
         #ind_insert = find_first_nonzero_indices(ind_insert)
         #ind_insert = torch.cat(ind_insert)
-        #pdb.set_trace()
+        
 
         #for i in range(x.shape[0]):
         #    x[i,ind_insert[i]:ind_insert[i]+3,:] = img_tokens[i]
-        #pdb.set_trace()
+        
         
         #img_tokens = img_tokens.view(b_size, 1, -1)
         #ind_insert = ind_insert.nonzero()[0]

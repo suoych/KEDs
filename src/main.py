@@ -36,7 +36,6 @@ from utils import is_master, convert_models_to_fp32
 import torchvision.transforms as T
 import numpy as np
 import random
-import pdb
 from torch.utils.data import DataLoader
 import faiss
 import copy
@@ -386,7 +385,7 @@ def main():
             args.name = strftime(args.name, gmtime())
 
 
-    #pdb.set_trace()
+    
     if args.copy_codebase:
         import sys, subprocess
         from shutil import copytree, ignore_patterns
@@ -442,10 +441,10 @@ def main():
     args.log_level = logging.DEBUG if args.debug else logging.INFO
     log_queue = setup_primary_logging(args.log_path, args.log_level)
     
-    #pdb.set_trace()
+    
     """
     # We load database here.
-    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database_100000")#dino_cc_database") 
+    Base_dataset = LoadDataBase("/home/clip_cc_database_100000")#dino_cc_database") 
     print("Loading databases!")
     dataloader = DataLoader(Base_dataset, batch_size=512, shuffle=False, num_workers=10)
     database = {}
@@ -467,20 +466,16 @@ def main():
     text_bases = text_bases / text_bases.norm(dim=1, keepdim=True)
     database = [image_bases,text_bases, base_names]
     torch.cuda.empty_cache()
-    pdb.set_trace()
     """
     print("Loading databases!")
-    image_bases = torch.load("/home/yucheng/cc_image_databases.pt",map_location="cpu")
-    text_bases = torch.load("/home/yucheng/cc_text_databases.pt",map_location="cpu")
-    #subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
-    #other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
+    image_bases = torch.load("/home/cc_image_databases.pt",map_location="cpu")
+    text_bases = torch.load("/home/cc_text_databases.pt",map_location="cpu")
     basenames = []
-    with open("/home/yucheng/database_names.txt", "r") as f:
+    with open("/home/database_names.txt", "r") as f:
         for line in f:
             basenames.append(line.strip())
     database = [image_bases,text_bases,basenames]#,subject_bases,other_bases]
     print("Loading databases done!")
-    #pdb.set_trace()
     
     # Distributed training = training on more than one GPU.
     # Also easily possible to extend to multiple nodes & multiple GPUs.

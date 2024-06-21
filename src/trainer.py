@@ -25,7 +25,6 @@ import torch.distributed as dist
 from tqdm import tqdm
 from torchvision.utils import save_image
 import sys
-import pdb
 import wandb
 import logging
 import torch.nn.functional as F
@@ -55,7 +54,7 @@ def get_loss_img2text_image(model, img2text,retrieval_fuse, text_condition, imag
     topk_image_features,topk_text_features = get_retrieved_features(image_features,database,args)
     topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
     topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
-    #pdb.set_trace()
+    
 
     mapped_features = img2text(image_features)
     topk_image_features = img2text(topk_image_features)
@@ -272,7 +271,6 @@ def get_extra_cap_features(feature, database,args,topk=2):
     _, topk_text_indices = text_gpu_index.search(feature.clone().cpu().numpy(), topk) # search topk
     b,k = topk_text_indices.shape[0],topk_text_indices.shape[1]
     
-    #pdb.set_trace()
     topk_basenames = []
     for i in range(b):
         for j in range(k):
@@ -297,7 +295,7 @@ def get_loss_img2text(model, img2text,retrieval_fuse, text_condition, images, ca
     topk_image_features,topk_text_features = get_retrieved_features(image_features, database, args)
     topk_image_features = topk_image_features.cuda(args.gpu, non_blocking=True)
     topk_text_features = topk_text_features.cuda(args.gpu, non_blocking=True)
-    #pdb.set_trace()
+    
 
     mapped_features = img2text(image_features)
     topk_image_features = img2text(topk_image_features)
@@ -432,8 +430,6 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
 
     num_batches_per_epoch = dataloader.num_batches
 
-    end = time.time()
-    #pdb.set_trace()
     i = 0
     for batch in dataloader:
         step = num_batches_per_epoch * epoch + i
@@ -446,7 +442,6 @@ def train(model, img2text,retrieval_fuse, text_condition, data, epoch, optimizer
         #print(images.shape)
         #print(len(batch))
         images, caps, subject, other = batch[0], batch[1], batch[2], batch[3] # this is the original code
-        #pdb.set_trace()
         if len(batch) == 3 and args.use_debiased_sampler:
             data_identifier = torch.unique(batch[2])[0].numpy()
         else:
@@ -535,7 +530,7 @@ def save_feature(model, img2text, data, epoch, optimizer, scaler, scheduler, arg
 
         #images, caps, base_name = batch[0], batch[1], batch[2] # this is the original code
         images, caps, subject, other, base_name = batch[0], batch[1], batch[2], batch[3], batch[4]
-        #pdb.set_trace()
+        
         #if args.gpu is not None:
         #    images = images.cuda(args.gpu, non_blocking=True)
 
@@ -558,11 +553,6 @@ def save_feature(model, img2text, data, epoch, optimizer, scaler, scheduler, arg
             text_o = text_o.cuda(args.gpu, non_blocking=True)
             text_o = model.encode_text(text_o)
         
-        for j in range(images.shape[0]):
-            file_name = base_name[j] + '.pt'
-            #torch.save(image_features[j].clone(), os.path.join("/home/yucheng/cc_image_feature_folder", file_name))
-            torch.save(text_s[j].clone(), os.path.join("/home/yucheng/cc_text_feature_folder_subject", file_name))
-            torch.save(text_o[j].clone(), os.path.join("/home/yucheng/cc_text_feature_folder_other", file_name))
 
 
         batch_time = time.time() - end

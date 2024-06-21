@@ -34,12 +34,11 @@ from PIL import Image
 
 from model.clip import _transform, load
 from model.model import convert_weights, CLIP, IM2TEXT,CrossFormer,T2I
-from eval_utils import evaluate_imgnet_retrieval, evaluate_coco, evaluate_fashion, evaluate_cirr, evaluate_cirr_test,circo_val_retrieval
-from data import CsvDataset, CustomFolder, ImageList, CsvCOCO, FashionIQ, CIRR, CIRCODataset,collate_fn, LoadDataBase
+from eval_utils import evaluate_imgnet_retrieval, evaluate_coco, evaluate_fashion, evaluate_cirr, evaluate_cirr_test
+from data import CsvDataset, CustomFolder, ImageList, CsvCOCO, FashionIQ, CIRR,collate_fn, LoadDataBase
 from params import parse_args, get_project_root
 from logger import setup_primary_logging, setup_worker_logging
 from utils import is_master, convert_models_to_fp32, TargetPad
-import pdb
 import faiss
 import copy
 import numpy as np
@@ -239,11 +238,11 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     torch.cuda.manual_seed_all(args.seed) 
     torch.use_deterministic_algorithms(True)
     #root_project = os.path.join(get_project_root(), 'data')
-    root_project = "/home/yucheng/comp_data"
+    root_project = "/home/comp_data"
 
     # We load database here.
     
-    Base_dataset = LoadDataBase("/home/yucheng/clip_cc_database_750000") #dino_cc_database")
+    Base_dataset = LoadDataBase("/home/clip_cc_database_750000") #dino_cc_database")
     print("Loading databases!")
     dataloader = DataLoader(Base_dataset, batch_size=100, shuffle=False, num_workers=10)
     database = {}
@@ -277,15 +276,12 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     #subject_bases = subject_bases / subject_bases.norm(dim=1, keepdim=True)
     #other_bases = other_bases / other_bases.norm(dim=1, keepdim=True)
     database = [image_bases,text_bases,basenames]#,subject_bases,other_bases]
-    pdb.set_trace()
     """
     print("Loading databases!")
-    image_bases = torch.load("/home/yucheng/cc_image_databases.pt",map_location="cpu")
-    text_bases = torch.load("/home/yucheng/cc_text_databases.pt",map_location="cpu")
-    #subject_bases = torch.load("/home/yucheng/cc_subject_databases.pt",map_location="cpu")
-    #other_bases = torch.load("/home/yucheng/cc_other_databases.pt",map_location="cpu")
+    image_bases = torch.load("/home/cc_image_databases.pt",map_location="cpu")
+    text_bases = torch.load("/home/cc_text_databases.pt",map_location="cpu")
     basenames = []
-    with open("/home/yucheng/database_names.txt", "r") as f:
+    with open("/home/database_names.txt", "r") as f:
         for line in f:
             basenames.append(line.strip())
     database = [image_bases,text_bases,basenames]#,subject_bases,other_bases]
@@ -302,7 +298,6 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     database.append(text_gpu_index)
     print("Loading databases done!")
     print("Loading databases done!")
-    #pdb.set_trace()
 
     ## Padding option
     if args.target_pad:
@@ -440,24 +435,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             pin_memory=True,
             drop_last=False)
         eval_func(model, img2text, retrieval_fuse, text_condition, database, args, prompt, source_dataloader, target_dataloader)
-    elif args.eval_mode == 'circo':
-        circo_path = os.path.join(root_project, 'CIRCO')
-        relative_val_dataset = CIRCODataset(circo_path, 'val', 'relative', preprocess_val)
-        for j in range(1,15):
-            location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5/checkpoints/epoch_{2*j-1}.pt"
-            img2text, retrieval_fuse, text_condition = load_model_without_definition(args,img2text, retrieval_fuse, text_condition, location) 
-            img2text_tb = copy.deepcopy(img2text) 
-            retrieval_fuse_tb = copy.deepcopy(retrieval_fuse) 
-            text_condition_tb = copy.deepcopy(text_condition)
-            text_location = f"/mount/ccai_nas/yucheng/zcomp/logs/I2T_retrieval_3tokens_3layer_lr5e-5/checkpoints/epoch_{2*j}.pt"
-            img2text_tb, retrieval_fuse_tb, text_condition_tb = load_model_without_definition(args,img2text_tb, retrieval_fuse_tb, text_condition_tb, text_location) 
-            #pdb.set_trace()
-            img2text_l = [img2text,img2text_tb] 
-            retrieval_fuse_l = [retrieval_fuse, retrieval_fuse_tb] 
-            text_condition_l = [text_condition, text_condition_tb]
-            circo_metrics = circo_val_retrieval(circo_path, model, img2text_l, retrieval_fuse_l, text_condition_l, database, preprocess_val,args)
-            for k, v in circo_metrics.items():
-                print(f"{k} = {v:.2f}")
+    
 
 
 def main():
@@ -529,7 +507,6 @@ def main():
     args.log_level = logging.DEBUG if args.debug else logging.INFO
     log_queue = setup_primary_logging(args.log_path, args.log_level)
     args.world_size = 1
-    #pdb.set_trace()
     #try:
     main_worker(args.gpu, None, log_queue, args)
     #except:

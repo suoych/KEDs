@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader
 from model.clip import _transform, load
 from model.model import convert_weights, CLIP, IM2TEXT
 from eval_utils import visualize_results
-from data import get_data, CsvDataset, CustomFolder, CIRR, FashionIQ, ImageList,CIRCODataset,collate_fn
+from data import get_data, CsvDataset, CustomFolder, CIRR, FashionIQ, ImageList,collate_fn
 from params import parse_args, get_project_root
 from logger import setup_primary_logging, setup_worker_logging
 from utils import is_master, convert_models_to_fp32, TargetPad
@@ -177,9 +177,6 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
                             vis_mode=True)
     elif args.retrieval_data == 'coco':
         dataset = CustomFolder(os.path.join(root_project, "coco/val2017"), transform=preprocess_val)
-    elif args.eval_mode == 'circo':
-        circo_path = os.path.join(root_project, 'CIRCO')
-        dataset = CIRCODataset(circo_path, 'val', 'classic', preprocess_val)
     else:
         raise ValueError
     dataloader = DataLoader(

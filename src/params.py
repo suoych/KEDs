@@ -93,7 +93,7 @@ def parse_args():
     )
     parser.add_argument("--eval-mode",
         type=str,
-        choices=["coco", "cirr", "cirr_test", "fashion", "imgnet","circo"],
+        choices=["coco", "cirr", "cirr_test", "fashion", "imgnet"],
         default="coco",
         help="Evaluate Pacs")
     parser.add_argument("--middle_dim",
