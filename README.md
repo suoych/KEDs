@@ -1,17 +1,20 @@
 # KEDs
 
 Implementation of the paper Knowledge-Enhanced Dual-stream Zero-shot Composed Image Retrieval (CVPR 2024)
-This is a raw version, we will further refine it.
 
 
 ### Preparation
-1. Download the CC3M dataset (we use image_byte format data).
+1. Download the CC3M dataset (we transform the image format into image_byte format, you can use the raw image data as well).
 2. Install the GPU version Faiss library, then random sample 0.5M image-text pairs from CC3M as Bi-modality knowledge. You can encode the database using CLIP model first and save them into a .pt file (refer to the code in src/eval_retrieval.py)
 3. Install python environment
 ```
 pip install -r requirements.txt
 ``` 
 For other preparation, please refer to Pic2word project.
+
+### Pretrained models and Random sampled databases
+
+Please refer to [the huggingface repo](https://huggingface.co/LionheartzzZ/KEDs/tree/main), where the *cc_image_databases.pt* and *cc_text_databases.pt* contains the bi-modality knowledge features encoded by CLIP-VIT-L-14 and *image_stream.pt* and *text_stream.pt* are the example checkpoints for the two stream networks.
 
 ### Training command
 
